@@ -1,0 +1,20 @@
+# Binaries
+bin/
+*.exe
+control-plane.exe
+edge-agent.exe
+origin.exe
+stress.exe
+
+# Test artifacts
+coverage
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
