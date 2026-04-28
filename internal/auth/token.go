@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -68,6 +69,54 @@ func (s *Signer) Verify(token string) (*TokenPayload, error) {
 		return nil, fmt.Errorf("token expired")
 	}
 	return &p, nil
+}
+
+// MatchesIP returns true if ip falls within the IPPrefix CIDR.
+// Returns true if IPPrefix is empty (no IP restriction).
+func (p *TokenPayload) MatchesIP(ip string) (bool, error) {
+	if p.IPPrefix == "" {
+		return true, nil
+	}
+	_, cidr, err := net.ParseCIDR(p.IPPrefix)
+	if err != nil {
+		return false, fmt.Errorf("invalid ip_prefix in token: %w", err)
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false, fmt.Errorf("invalid client ip: %q", ip)
+	}
+	return cidr.Contains(parsed), nil
+}
+
+// VerifyWithIP validates the token and checks IP binding.
+func (s *Signer) VerifyWithIP(token, clientIP string) (*TokenPayload, error) {
+	p, err := s.Verify(token)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := p.MatchesIP(clientIP)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("client ip %q does not match token ip_prefix %q", clientIP, p.IPPrefix)
+	}
+	return p, nil
+}
+
+// ComputeIPPrefix returns a CIDR prefix for the given IP address.
+// Uses /24 for IPv4 and /64 for IPv6.
+func ComputeIPPrefix(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		mask := net.CIDRMask(24, 32)
+		return (&net.IPNet{IP: v4.Mask(mask), Mask: mask}).String()
+	}
+	mask := net.CIDRMask(64, 128)
+	return (&net.IPNet{IP: parsed.Mask(mask), Mask: mask}).String()
 }
 
 func splitToken(token string) []string {

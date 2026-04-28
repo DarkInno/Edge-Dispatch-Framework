@@ -39,7 +39,6 @@ func main() {
 		cancel()
 	}()
 
-	// If NODE_TOKEN is empty, Edge will register with control plane first in Start()
 	if err := edge.Start(ctx); err != nil {
 		logger.Error("edge agent failed", "error", err)
 		os.Exit(1)

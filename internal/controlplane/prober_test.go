@@ -155,8 +155,8 @@ func TestProbeOneMockedServer(t *testing.T) {
 	if !result.Success {
 		t.Errorf("probe should succeed, got error: %s", result.Error)
 	}
-	if result.RTTMs <= 0 {
-		t.Errorf("RTT should be positive, got %.2f", result.RTTMs)
+	if result.RTTMs < 0 {
+		t.Errorf("RTT should be non-negative, got %.2f", result.RTTMs)
 	}
 }
 

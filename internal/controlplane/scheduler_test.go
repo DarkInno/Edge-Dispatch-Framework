@@ -3,6 +3,7 @@ package controlplane
 import (
 	"testing"
 
+	"github.com/darkinno/edge-dispatch-framework/internal/config"
 	"github.com/darkinno/edge-dispatch-framework/internal/models"
 )
 
@@ -91,8 +92,9 @@ func TestScore(t *testing.T) {
 			want:   0, // 0 + 0 + 0 + 0 - 100 = -100 -> clamp to 0
 		},
 		{
-			name: "partial scores",
+			name: "partial scores with region",
 			node: models.Node{
+				Region: "cn-bj",
 				Scores: models.NodeScores{
 					ReachableScore: 50,
 					HealthScore:    80,
@@ -100,7 +102,7 @@ func TestScore(t *testing.T) {
 				},
 			},
 			client: models.ClientInfo{Region: "cn-bj"},
-			want:   76, // 0 + 0 + 15 + 16 - 5 = 26... wait no 30 + 0 + 15 + 16 - 5 = 56
+			want:   56, // 30 + 0 + 15 + 16 - 5 = 56
 		},
 	}
 
@@ -161,9 +163,30 @@ func TestFilter(t *testing.T) {
 func TestNoOriginFallback(t *testing.T) {
 	t.Run("degrade disabled", func(t *testing.T) {
 		s := &Scheduler{
-			cfg: &struct{ DegradeToOrigin bool }{DegradeToOrigin: false}.convert(),
+			cfg: &config.ControlPlaneConfig{DegradeToOrigin: false, DefaultTTLMs: 30000},
 		}
-		_ = s
+		resp := s.NoOriginFallback(models.DispatchRequest{})
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if len(resp.Candidates) != 0 {
+			t.Errorf("expected 0 candidates when fallback disabled, got %d", len(resp.Candidates))
+		}
+	})
+
+	t.Run("degrade enabled", func(t *testing.T) {
+		s := &Scheduler{
+			cfg: &config.ControlPlaneConfig{DegradeToOrigin: true, DefaultTTLMs: 30000},
+		}
+		resp := s.NoOriginFallback(models.DispatchRequest{
+			Resource: models.ResourceInfo{Key: "video/test.mp4"},
+		})
+		if len(resp.Candidates) != 1 {
+			t.Fatalf("expected 1 candidate, got %d", len(resp.Candidates))
+		}
+		if resp.Candidates[0].ID != "origin" {
+			t.Errorf("candidate ID = %q, want 'origin'", resp.Candidates[0].ID)
+		}
 	})
 }
 

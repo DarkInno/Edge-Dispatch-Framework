@@ -178,7 +178,13 @@ func main() {
 
 	go func() {
 		logger.Info("origin server listening", "addr", cfg.ListenAddr, "data_dir", cfg.DataDir)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			logger.Error("http server error", "error", err)
 			os.Exit(1)
 		}

@@ -33,7 +33,7 @@ services:
       - "8080:8080"
     environment:
       CP_LISTEN_ADDR: ":8080"
-      CP_PG_URL: "postgres://edf:edf@postgres:5432/edf?sslmode=disable"
+      CP_PG_URL: "postgres://edf:edf@postgres:5432/edf?sslmode=disable&pool_max_conns=25&pool_min_conns=5&pool_max_conn_lifetime=30m&pool_max_conn_idle_time=10m&pool_health_check_period=30s"
       CP_REDIS_ADDR: "redis:6379"
       CP_TOKEN_SECRET: "demo-secret-change-in-production"
     depends_on:
@@ -81,6 +81,23 @@ services:
     environment:
       ORIGIN_LISTEN_ADDR: ":7070"
       ORIGIN_DATA_DIR: "/tmp/edf-origin"
+
+  stress:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.stress
+    profiles: ["stress"]
+    depends_on:
+      - origin
+      - control-plane
+      - edge-agent-1
+    command:
+      - "-mode=bench-origin"
+      - "-c=200"
+      - "-d=15s"
+      - "-origin=http://origin:7070"
+      - "-objects=200"
+      - "-no-body=true"
 
 volumes:
   pgdata:

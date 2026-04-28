@@ -29,14 +29,17 @@ type cacheMeta struct {
 }
 
 type Cache struct {
-	dir    string
-	maxGB  int64
-	maxBytes int64
-	mu     sync.RWMutex
-	hits   atomic.Int64
-	misses atomic.Int64
-	size   atomic.Int64
-	count  atomic.Int64
+	dir         string
+	maxGB       int64
+	maxBytes    int64
+	mu          sync.RWMutex
+	hits        atomic.Int64
+	misses      atomic.Int64
+	size        atomic.Int64
+	count       atomic.Int64
+	accessTimes map[string]int64
+	sizes       map[string]int64
+	accessMu    sync.RWMutex
 }
 
 func NewCache(dir string, maxGB int64) (*Cache, error) {
@@ -44,12 +47,13 @@ func NewCache(dir string, maxGB int64) (*Cache, error) {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 	c := &Cache{
-		dir:      dir,
-		maxGB:    maxGB,
-		maxBytes: maxGB * 1024 * 1024 * 1024,
+		dir:         dir,
+		maxGB:       maxGB,
+		maxBytes:    maxGB * 1024 * 1024 * 1024,
+		accessTimes: make(map[string]int64),
+		sizes:       make(map[string]int64),
 	}
 
-	// Recalculate size and count from existing files on startup
 	var totalSize int64
 	var totalCount int64
 	entries, _ := os.ReadDir(dir)
@@ -68,6 +72,8 @@ func NewCache(dir string, maxGB int64) (*Cache, error) {
 		}
 		totalSize += m.Size
 		totalCount++
+		c.accessTimes[entry.Name()] = m.LastAccess
+		c.sizes[entry.Name()] = m.Size
 	}
 	c.size.Store(totalSize)
 	c.count.Store(totalCount)
@@ -109,8 +115,9 @@ func (c *Cache) Get(ctx context.Context, key string) (io.ReadCloser, int64, erro
 		return nil, 0, fmt.Errorf("stat cache: %w", err)
 	}
 
-	// Update last access
-	c.updateAccess(kp, fi.Size())
+	c.accessMu.Lock()
+	c.accessTimes[filepath.Base(kp)] = time.Now().UnixNano()
+	c.accessMu.Unlock()
 
 	c.hits.Add(1)
 	return f, fi.Size(), nil
@@ -147,13 +154,20 @@ func (c *Cache) Put(ctx context.Context, key string, data io.Reader, size int64)
 		return fmt.Errorf("write meta: %w", err)
 	}
 
+	entryName := filepath.Base(kp)
+	c.accessMu.Lock()
+	c.accessTimes[entryName] = now
+	c.sizes[entryName] = written
+	c.accessMu.Unlock()
+
 	c.count.Add(1)
 	c.size.Add(written)
 
-	// Evict if over limit
 	currentSize := c.size.Load()
 	if currentSize > c.maxBytes {
+		c.mu.Lock()
 		c.evict(ctx, currentSize-c.maxBytes)
+		c.mu.Unlock()
 	}
 
 	return nil
@@ -185,6 +199,12 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("delete cache entry: %w", err)
 	}
 
+	entryName := filepath.Base(kp)
+	c.accessMu.Lock()
+	delete(c.accessTimes, entryName)
+	delete(c.sizes, entryName)
+	c.accessMu.Unlock()
+
 	c.count.Add(-1)
 	c.size.Add(-metaSize)
 	return nil
@@ -213,31 +233,20 @@ func (c *Cache) evict(ctx context.Context, targetBytes int64) error {
 		size       int64
 	}
 
+	c.accessMu.Lock()
 	var entries []entry
-	dirEntries, err := os.ReadDir(c.dir)
-	if err != nil {
-		return fmt.Errorf("read cache dir: %w", err)
-	}
-
-	for _, de := range dirEntries {
-		if !de.IsDir() {
-			continue
-		}
-		mp := filepath.Join(c.dir, de.Name(), "meta.json")
-		data, err := os.ReadFile(mp)
-		if err != nil {
-			continue
-		}
-		var m cacheMeta
-		if err := json.Unmarshal(data, &m); err != nil {
+	for k, v := range c.accessTimes {
+		sz, ok := c.sizes[k]
+		if !ok {
 			continue
 		}
 		entries = append(entries, entry{
-			key:        de.Name(),
-			lastAccess: m.LastAccess,
-			size:       m.Size,
+			key:        k,
+			lastAccess: v,
+			size:       sz,
 		})
 	}
+	c.accessMu.Unlock()
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].lastAccess < entries[j].lastAccess
@@ -254,6 +263,12 @@ func (c *Cache) evict(ctx context.Context, targetBytes int64) error {
 			continue
 		}
 		freed += e.size
+
+		c.accessMu.Lock()
+		delete(c.accessTimes, e.key)
+		delete(c.sizes, e.key)
+		c.accessMu.Unlock()
+
 		c.count.Add(-1)
 		c.size.Add(-e.size)
 	}
@@ -264,12 +279,4 @@ func (c *Cache) evict(ctx context.Context, targetBytes int64) error {
 
 func (c *Cache) Close() error {
 	return nil
-}
-
-func (c *Cache) updateAccess(kp string, size int64) {
-	now := time.Now().UnixNano()
-	mp := filepath.Join(kp, "meta.json")
-	meta := cacheMeta{Size: size, LastAccess: now}
-	data, _ := json.Marshal(meta)
-	_ = os.WriteFile(mp, data, 0o644)
 }

@@ -1,7 +1,9 @@
 package edgeagent
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,12 +12,36 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
 )
+
+func extractClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.IndexByte(xff, ','); idx > 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+var bufPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
 
 type serverMetrics struct {
 	requests    atomic.Int64
@@ -60,7 +86,18 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	ln, err := net.Listen("tcp", s.cfg.ListenAddr)
+	var ln net.Listener
+	var err error
+	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("load tls cert: %w", err)
+		}
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		ln, err = tls.Listen("tcp", s.cfg.ListenAddr, tlsCfg)
+	} else {
+		ln, err = net.Listen("tcp", s.cfg.ListenAddr)
+	}
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.cfg.ListenAddr, err)
 	}
@@ -93,11 +130,12 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify token
+	// Verify token with IP binding
 	token := r.URL.Query().Get("token")
 	if token != "" {
-		if _, err := s.signer.Verify(token); err != nil {
-			slog.Warn("invalid token", "err", err)
+		clientIP := extractClientIP(r)
+		if _, err := s.signer.VerifyWithIP(token, clientIP); err != nil {
+			slog.Warn("invalid token", "err", err, "client_ip", clientIP)
 			http.Error(w, "forbidden", http.StatusForbidden)
 			s.metrics.errors.Add(1)
 			return
@@ -106,8 +144,9 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request) {
 
 	// Extract key from /obj/{key}
 	key := strings.TrimPrefix(r.URL.Path, "/obj/")
-	if key == "" {
-		http.Error(w, "missing key", http.StatusBadRequest)
+	key = strings.TrimSpace(key)
+	if key == "" || key == "." || strings.Contains(key, "..") {
+		http.Error(w, "invalid key", http.StatusBadRequest)
 		s.metrics.errors.Add(1)
 		return
 	}
@@ -207,9 +246,13 @@ func (s *Server) serveRangeFromCache(w http.ResponseWriter, r *http.Request, rea
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+	json.NewEncoder(buf).Encode(map[string]string{"status": "ok"})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	w.Write(buf.Bytes())
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -224,8 +267,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		"cache":       cacheStats,
 	}
 
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+	json.NewEncoder(buf).Encode(data)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	w.Write(buf.Bytes())
 }
 
 func (s *Server) RequestCount() int64  { return s.metrics.requests.Load() }

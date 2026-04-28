@@ -1,8 +1,10 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,6 +28,9 @@ type ControlPlaneConfig struct {
 	MaxCandidates  int
 	DefaultTTLMs   int64
 	DegradeToOrigin bool
+	NodeCacheTTL   time.Duration
+	TLSCertFile    string
+	TLSKeyFile     string
 }
 
 // EdgeAgentConfig holds edge agent specific configuration.
@@ -38,17 +43,21 @@ type EdgeAgentConfig struct {
 	OriginURL        string
 	HeartbeatInterval time.Duration
 	MaxConns         int
+	TLSCertFile      string
+	TLSKeyFile       string
 }
 
 // OriginConfig holds origin server configuration.
 type OriginConfig struct {
-	ListenAddr string
-	DataDir    string
+	ListenAddr  string
+	DataDir     string
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // LoadControlPlane loads configuration from environment variables for control plane.
 func LoadControlPlane() *ControlPlaneConfig {
-	return &ControlPlaneConfig{
+	cfg := &ControlPlaneConfig{
 		ListenAddr:      getEnv("CP_LISTEN_ADDR", ":8080"),
 		PGURL:           getEnv("CP_PG_URL", "postgres://edf:edf@localhost:5432/edf?sslmode=disable"),
 		RedisAddr:       getEnv("CP_REDIS_ADDR", "localhost:6379"),
@@ -60,12 +69,17 @@ func LoadControlPlane() *ControlPlaneConfig {
 		MaxCandidates:   intEnv("CP_MAX_CANDIDATES", 5),
 		DefaultTTLMs:    int64(intEnv("CP_DEFAULT_TTL_MS", 30000)),
 		DegradeToOrigin: boolEnv("CP_DEGRADE_TO_ORIGIN", true),
+		NodeCacheTTL:    durationEnv("CP_NODE_CACHE_TTL", 5*time.Second),
+		TLSCertFile:     getEnv("CP_TLS_CERT_FILE", ""),
+		TLSKeyFile:      getEnv("CP_TLS_KEY_FILE", ""),
 	}
+	cfg.warnDefaults()
+	return cfg
 }
 
 // LoadEdgeAgent loads configuration for edge agent.
 func LoadEdgeAgent() *EdgeAgentConfig {
-	return &EdgeAgentConfig{
+	cfg := &EdgeAgentConfig{
 		ListenAddr:        getEnv("EA_LISTEN_ADDR", ":9090"),
 		ControlPlaneURL:   getEnv("EA_CONTROL_PLANE_URL", "http://localhost:8080"),
 		NodeToken:         getEnv("EA_NODE_TOKEN", ""),
@@ -74,14 +88,20 @@ func LoadEdgeAgent() *EdgeAgentConfig {
 		OriginURL:         getEnv("EA_ORIGIN_URL", "http://localhost:7070"),
 		HeartbeatInterval: durationEnv("EA_HEARTBEAT_INTERVAL", 10*time.Second),
 		MaxConns:          intEnv("EA_MAX_CONNS", 1000),
+		TLSCertFile:       getEnv("EA_TLS_CERT_FILE", ""),
+		TLSKeyFile:        getEnv("EA_TLS_KEY_FILE", ""),
 	}
+	cfg.warnDefaults()
+	return cfg
 }
 
 // LoadOrigin loads configuration for the origin server.
 func LoadOrigin() *OriginConfig {
 	return &OriginConfig{
-		ListenAddr: getEnv("ORIGIN_LISTEN_ADDR", ":7070"),
-		DataDir:    getEnv("ORIGIN_DATA_DIR", "/tmp/edf-origin"),
+		ListenAddr:  getEnv("ORIGIN_LISTEN_ADDR", ":7070"),
+		DataDir:     getEnv("ORIGIN_DATA_DIR", "/tmp/edf-origin"),
+		TLSCertFile: getEnv("ORIGIN_TLS_CERT_FILE", ""),
+		TLSKeyFile:  getEnv("ORIGIN_TLS_KEY_FILE", ""),
 	}
 }
 
@@ -117,4 +137,19 @@ func boolEnv(key string, defaultVal bool) bool {
 		}
 	}
 	return defaultVal
+}
+
+func (c *ControlPlaneConfig) warnDefaults() {
+	if c.TokenSecret == "change-me-in-production" {
+		slog.Warn("WARNING: CP_TOKEN_SECRET is using the default value. Set a strong secret in production.")
+	}
+	if strings.Contains(c.PGURL, "sslmode=disable") {
+		slog.Warn("WARNING: PostgreSQL connection has SSL disabled (sslmode=disable). Enable TLS in production.")
+	}
+}
+
+func (c *EdgeAgentConfig) warnDefaults() {
+	if c.ControlPlaneURL != "" && !strings.Contains(c.ControlPlaneURL, "https") && !strings.HasPrefix(c.ControlPlaneURL, "http://localhost") {
+		slog.Warn("WARNING: ControlPlaneURL is using plain HTTP. Use HTTPS in production.")
+	}
 }

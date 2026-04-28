@@ -49,8 +49,9 @@ func main() {
 	// Create control plane components
 	registry := controlplane.NewRegistry(pgStore, redisStore)
 	heartbeat := controlplane.NewHeartbeat(pgStore, redisStore, cfg)
-	prober := controlplane.NewProber(pgStore, cfg)
-	scheduler := controlplane.NewScheduler(pgStore, signer, cfg)
+	nodeCache := controlplane.NewNodeCache(pgStore, cfg.NodeCacheTTL)
+	prober := controlplane.NewProber(pgStore, nodeCache, cfg)
+	scheduler := controlplane.NewScheduler(nodeCache, signer, cfg)
 
 	// Create API handler (returns http.Handler)
 	handler := controlplane.NewAPI(registry, heartbeat, scheduler, cfg)
@@ -72,7 +73,13 @@ func main() {
 
 	go func() {
 		logger.Info("http server listening", "addr", cfg.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			logger.Error("http server error", "error", err)
 			os.Exit(1)
 		}

@@ -119,13 +119,15 @@ func (r *Reporter) ReportOnce(ctx context.Context) error {
 		},
 	}
 
-	body, err := json.Marshal(hb)
-	if err != nil {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+	if err := json.NewEncoder(buf).Encode(hb); err != nil {
 		return fmt.Errorf("marshal heartbeat: %w", err)
 	}
 
 	url := r.cfg.ControlPlaneURL + "/v1/nodes/heartbeat"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return fmt.Errorf("create heartbeat request: %w", err)
 	}
@@ -159,13 +161,15 @@ func (r *Reporter) Register(ctx context.Context) error {
 		Capabilities: caps,
 	}
 
-	body, err := json.Marshal(regReq)
-	if err != nil {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+	if err := json.NewEncoder(buf).Encode(regReq); err != nil {
 		return fmt.Errorf("marshal register: %w", err)
 	}
 
 	url := r.cfg.ControlPlaneURL + "/v1/nodes/register"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return fmt.Errorf("create register request: %w", err)
 	}

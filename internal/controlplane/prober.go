@@ -15,20 +15,24 @@ import (
 )
 
 type Prober struct {
-	pg         *store.PGStore
-	cfg        *config.ControlPlaneConfig
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	httpClient *http.Client
+	pg               *store.PGStore
+	nodeCache        *NodeCache
+	cfg              *config.ControlPlaneConfig
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	httpClient       *http.Client
+	probeConcurrency int
 }
 
-func NewProber(pg *store.PGStore, cfg *config.ControlPlaneConfig) *Prober {
+func NewProber(pg *store.PGStore, nodeCache *NodeCache, cfg *config.ControlPlaneConfig) *Prober {
 	return &Prober{
-		pg:  pg,
-		cfg: cfg,
+		pg:        pg,
+		nodeCache: nodeCache,
+		cfg:       cfg,
 		httpClient: &http.Client{
 			Timeout: cfg.ProbeTimeout,
 		},
+		probeConcurrency: 10,
 	}
 }
 
@@ -60,26 +64,41 @@ func (p *Prober) Stop() {
 }
 
 func (p *Prober) probeAll(ctx context.Context) {
-	nodes, err := p.pg.ListActiveNodes(ctx)
+	nodes, err := p.nodeCache.GetActiveNodes(ctx)
 	if err != nil {
 		slog.Error("list active nodes for probe", "error", err)
 		return
 	}
 
+	sem := make(chan struct{}, p.probeConcurrency)
+	var wg sync.WaitGroup
+	nodeIDs := make(map[string]bool)
+
 	for _, node := range nodes {
 		for _, ep := range node.Endpoints {
-			result, err := p.ProbeOne(ctx, node.NodeID, ep)
-			if err != nil {
-				slog.Warn("probe failed", "node_id", node.NodeID, "endpoint",
-					fmt.Sprintf("%s://%s:%d", ep.Scheme, ep.Host, ep.Port), "error", err)
-				continue
-			}
-			if err := p.pg.SaveProbeResult(ctx, *result); err != nil {
-				slog.Error("save probe result", "error", err)
-			}
+			wg.Add(1)
+			go func(nid string, ep models.Endpoint) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				result, err := p.ProbeOne(ctx, nid, ep)
+				if err != nil {
+					slog.Warn("probe failed", "node_id", nid, "error", err)
+					return
+				}
+				if err := p.pg.SaveProbeResult(ctx, *result); err != nil {
+					slog.Error("save probe result", "error", err)
+				}
+			}(node.NodeID, ep)
 		}
-		if err := p.UpdateScores(ctx, node.NodeID); err != nil {
-			slog.Error("update scores", "node_id", node.NodeID, "error", err)
+		nodeIDs[node.NodeID] = true
+	}
+	wg.Wait()
+
+	for nid := range nodeIDs {
+		if err := p.UpdateScores(ctx, nid); err != nil {
+			slog.Error("update scores", "node_id", nid, "error", err)
 		}
 	}
 }

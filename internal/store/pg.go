@@ -18,9 +18,28 @@ type PGStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPGStore creates a new PGStore with auto-migration.
+// NewPGStore creates a new PGStore with optimized connection pool and auto-migration.
 func NewPGStore(ctx context.Context, connStr string) (*PGStore, error) {
-	pool, err := pgxpool.New(ctx, connStr)
+	config, err := pgxpool.ParseConfig(connStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse pg config: %w", err)
+	}
+
+	// Connection pool tuning (pgxpool v5 official recommendations)
+	// MaxConns: default 4, increase for high-concurrency dispatch API
+	config.MaxConns = 25
+	// MinConns: keep warm connections to avoid cold-start latency
+	config.MinConns = 5
+	// MaxConnLifetime: recycle connections to prevent stale state
+	config.MaxConnLifetime = 30 * time.Minute
+	// MaxConnLifetimeJitter: spread connection recycling to avoid thundering herd
+	config.MaxConnLifetimeJitter = 5 * time.Minute
+	// MaxConnIdleTime: close idle connections faster to free resources
+	config.MaxConnIdleTime = 10 * time.Minute
+	// HealthCheckPeriod: detect dead connections quickly
+	config.HealthCheckPeriod = 30 * time.Second
+
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("connect pg: %w", err)
 	}
@@ -62,8 +81,14 @@ func (s *PGStore) migrate(ctx context.Context) error {
 		probed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_probe_results_node_id ON probe_results(node_id);
-	CREATE INDEX IF NOT EXISTS idx_probe_results_probed_at ON probe_results(probed_at);
+	-- Composite index for ListActiveNodes (covers the WHERE status IN (...) filter)
+	CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status) WHERE status IN ('ACTIVE', 'DEGRADED');
+
+	-- Index for probe queries: node_id + probed_at composite for time-range lookups
+	CREATE INDEX IF NOT EXISTS idx_probe_results_node_probed_at ON probe_results(node_id, probed_at DESC);
+
+	-- Index for probe success filter (used in GetProbeScores)
+	CREATE INDEX IF NOT EXISTS idx_probe_results_node_success ON probe_results(node_id, success, probed_at DESC) WHERE success = true;
 	`
 	_, err := s.pool.Exec(ctx, schema)
 	return err
@@ -175,36 +200,32 @@ func (s *PGStore) SaveProbeResult(ctx context.Context, pr models.ProbeResult) er
 	return err
 }
 
-// GetProbeScores computes aggregate probe scores for a node.
+// GetProbeScores computes aggregate probe scores for a node in a single query.
 func (s *PGStore) GetProbeScores(ctx context.Context, nodeID string) (*models.ProbeScore, error) {
 	ps := &models.ProbeScore{NodeID: nodeID}
 
-	// 1-minute success rate
-	s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0)
-		FROM probe_results WHERE node_id = $1 AND probed_at > NOW() - INTERVAL '1 minute'
-	`, nodeID).Scan(&ps.SuccessRate1m)
-
-	// 5-minute success rate
-	s.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0)
-		FROM probe_results WHERE node_id = $1 AND probed_at > NOW() - INTERVAL '5 minutes'
-	`, nodeID).Scan(&ps.SuccessRate5m)
-
-	// P50/P95 RTT from recent probes
-	s.pool.QueryRow(ctx, `
-		SELECT COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY rtt_ms), 0)
-		FROM probe_results WHERE node_id = $1 AND probed_at > NOW() - INTERVAL '5 minutes' AND success = true
-	`, nodeID).Scan(&ps.RTTP50)
-
-	s.pool.QueryRow(ctx, `
-		SELECT COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY rtt_ms), 0)
-		FROM probe_results WHERE node_id = $1 AND probed_at > NOW() - INTERVAL '5 minutes' AND success = true
-	`, nodeID).Scan(&ps.RTTP95)
-
-	s.pool.QueryRow(ctx, `
-		SELECT COALESCE(MAX(probed_at), '1970-01-01') FROM probe_results WHERE node_id = $1 AND success = true
-	`, nodeID).Scan(&ps.LastOkAt)
+	// Single query computes all 5 metrics at once (was 5 separate queries)
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN probed_at > NOW() - INTERVAL '1 minute' AND success THEN 1 ELSE 0 END)::float
+				/ NULLIF(SUM(CASE WHEN probed_at > NOW() - INTERVAL '1 minute' THEN 1 ELSE 0 END), 0), 0) AS success_rate_1m,
+			COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::float
+				/ NULLIF(COUNT(*), 0), 0) AS success_rate_5m,
+			COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY CASE WHEN success THEN rtt_ms END), 0) AS rtt_p50,
+			COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY CASE WHEN success THEN rtt_ms END), 0) AS rtt_p95,
+			COALESCE(MAX(CASE WHEN success THEN probed_at END), '1970-01-01') AS last_ok_at
+		FROM probe_results
+		WHERE node_id = $1 AND probed_at > NOW() - INTERVAL '5 minutes'
+	`, nodeID).Scan(
+		&ps.SuccessRate1m,
+		&ps.SuccessRate5m,
+		&ps.RTTP50,
+		&ps.RTTP95,
+		&ps.LastOkAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get probe scores: %w", err)
+	}
 
 	return ps, nil
 }
@@ -213,6 +234,11 @@ func (s *PGStore) GetProbeScores(ctx context.Context, nodeID string) (*models.Pr
 func (s *PGStore) RevokeNode(ctx context.Context, nodeID string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM nodes WHERE node_id = $1`, nodeID)
 	return err
+}
+
+// PoolStat returns connection pool statistics for monitoring.
+func (s *PGStore) PoolStat() pgxpool.Stat {
+	return *s.pool.Stat()
 }
 
 // Close closes the database connection pool.

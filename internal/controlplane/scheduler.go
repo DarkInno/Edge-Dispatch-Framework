@@ -13,21 +13,31 @@ import (
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
 	"github.com/darkinno/edge-dispatch-framework/internal/models"
-	"github.com/darkinno/edge-dispatch-framework/internal/store"
 )
 
-type Scheduler struct {
-	pg     *store.PGStore
-	signer *auth.Signer
-	cfg    *config.ControlPlaneConfig
+type scoredNode struct {
+	node  models.Node
+	score float64
 }
 
-func NewScheduler(pg *store.PGStore, signer *auth.Signer, cfg *config.ControlPlaneConfig) *Scheduler {
-	return &Scheduler{pg: pg, signer: signer, cfg: cfg}
+type scoredNodes []scoredNode
+
+func (s scoredNodes) Len() int           { return len(s) }
+func (s scoredNodes) Less(i, j int) bool { return s[i].score > s[j].score }
+func (s scoredNodes) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+
+type Scheduler struct {
+	nodeCache *NodeCache
+	signer    *auth.Signer
+	cfg       *config.ControlPlaneConfig
+}
+
+func NewScheduler(nodeCache *NodeCache, signer *auth.Signer, cfg *config.ControlPlaneConfig) *Scheduler {
+	return &Scheduler{nodeCache: nodeCache, signer: signer, cfg: cfg}
 }
 
 func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*models.DispatchResponse, error) {
-	nodes, err := s.pg.ListActiveNodes(ctx)
+	nodes, err := s.nodeCache.GetActiveNodes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -39,19 +49,12 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 		return s.NoOriginFallback(req), nil
 	}
 
-	type scoredNode struct {
-		node  models.Node
-		score float64
-	}
-
 	scored := make([]scoredNode, len(filtered))
 	for i, n := range filtered {
 		scored[i] = scoredNode{node: n, score: s.score(n, req.Client)}
 	}
 
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
+	sort.Sort(scoredNodes(scored))
 
 	maxCandidates := s.cfg.MaxCandidates
 	if len(scored) > maxCandidates {
@@ -77,9 +80,14 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 	}
 
 	exp := time.Now().Add(time.Duration(s.cfg.DefaultTTLMs) * time.Millisecond).Unix()
+	ipPrefix := ""
+	if req.Client.IP != "" {
+		ipPrefix = auth.ComputeIPPrefix(req.Client.IP)
+	}
 	tokenVal, err := s.signer.Sign(auth.TokenPayload{
-		Key: req.Resource.Key,
-		Exp: exp,
+		Key:      req.Resource.Key,
+		Exp:      exp,
+		IPPrefix: ipPrefix,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sign token: %w", err)

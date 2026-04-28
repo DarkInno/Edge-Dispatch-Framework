@@ -159,8 +159,6 @@ func TestCacheHitCount(t *testing.T) {
 }
 
 func TestCacheEviction(t *testing.T) {
-	c, cleanup := newTestCache(t)
-	defer cleanup()
 	ctx := context.Background()
 
 	// Create a cache with very small max size
