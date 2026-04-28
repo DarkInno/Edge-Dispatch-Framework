@@ -28,8 +28,8 @@
 cmd/                    # 服务入口（main.go）
   control-plane/        # 控制面
   edge-agent/           # 边缘节点
-  gateway/              # 网关（v0.3）
-  dns-adapter/          # DNS 适配器（v0.2）
+  gateway/              # 网关
+  dns-adapter/          # DNS 适配器
   origin/               # 示例源站
   stress/               # 压力测试
 
@@ -41,7 +41,7 @@ internal/               # 核心库（不可导出）
   dns/                  # DNS 服务器
   edgeagent/            # 边缘节点核心
   gateway/              # 网关反代
-  metrics/              # Prometheus 格式指标（v0.5）
+  metrics/              # Prometheus 指标
   models/               # 共享数据模型
   quic/                 # HTTP/3（占位）
   store/                # PG + Redis 存储层
@@ -49,7 +49,6 @@ internal/               # 核心库（不可导出）
   tunnel/               # 反向隧道协议
 
 docker/                 # Dockerfile
-docs/                   # 设计文档
 ```
 
 ## 构建与测试命令
@@ -207,8 +206,6 @@ if err := store.Upsert(ctx, data); err != nil {
 ## 文档更新
 
 修改功能时需同步更新：
-- `docs/API 设计.md` — API 变更
-- `docs/设计文档.md` — 架构/模型变更
 - `CHANGELOG.md` — 所有变更
 - `requirements.md` — 需求变更
 - `README.md` — 用户可见变更
