@@ -6,16 +6,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
+	"github.com/darkinno/edge-dispatch-framework/internal/contentindex"
 	"github.com/darkinno/edge-dispatch-framework/internal/controlplane"
 	"github.com/darkinno/edge-dispatch-framework/internal/store"
 )
 
 func main() {
+	debug.SetGCPercent(80)
+	debug.SetMemoryLimit(1 << 30)
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -52,6 +57,21 @@ func main() {
 	nodeCache := controlplane.NewNodeCache(pgStore, cfg.NodeCacheTTL)
 	prober := controlplane.NewProber(pgStore, nodeCache, cfg)
 	scheduler := controlplane.NewScheduler(nodeCache, signer, cfg)
+
+	// Content index (v0.2+)
+	ciStore, err := contentindex.NewStore(ctx, pgStore.Pool(), &cfg.ContentIndex)
+	if err != nil {
+		logger.Error("failed to create content index store", "error", err)
+		os.Exit(1)
+	}
+	defer ciStore.Close()
+	heartbeat.SetContentStore(ciStore)
+	scheduler.SetContentIndex(ciStore.Index())
+
+	// Load existing content index data into memory
+	if err := ciStore.LoadAll(ctx); err != nil {
+		logger.Warn("failed to load content index from db", "error", err)
+	}
 
 	// Create API handler (returns http.Handler)
 	handler := controlplane.NewAPI(registry, heartbeat, scheduler, cfg)

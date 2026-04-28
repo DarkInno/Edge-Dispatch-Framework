@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
@@ -12,6 +13,9 @@ import (
 )
 
 func main() {
+	debug.SetGCPercent(60)
+	debug.SetMemoryLimit(512 << 20)
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 

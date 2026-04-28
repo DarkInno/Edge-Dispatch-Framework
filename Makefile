@@ -5,6 +5,8 @@ build:
 	go build -o bin/edge-agent ./cmd/edge-agent
 	go build -o bin/origin ./cmd/origin
 	go build -o bin/stress ./cmd/stress
+	go build -o bin/dns-adapter ./cmd/dns-adapter
+	go build -o bin/gateway ./cmd/gateway
 
 run-cp: build
 	./bin/control-plane
@@ -14,6 +16,9 @@ run-ea: build
 
 run-origin: build
 	./bin/origin
+
+run-gateway: build
+	./bin/gateway
 
 clean:
 	rm -rf bin/
@@ -39,6 +44,12 @@ test-cover-html:
 
 test-short:
 	go test ./... -short -count=1 -timeout 30s
+
+test-tunnel:
+	go test ./internal/tunnel/... -count=1 -timeout 60s -v
+
+test-gateway:
+	go test ./internal/gateway/... -count=1 -timeout 60s -v
 
 bench:
 	go test ./... -bench=. -benchmem -timeout 120s
@@ -78,6 +89,10 @@ stress-bench-edge:
 	@echo "Benchmark: edge agent cache serving"
 	go run ./cmd/stress -mode=bench-edge -c=50 -d=30s -edge=http://localhost:9090 -objects=100
 
+stress-gateway:
+	@echo "Stress test: gateway proxy"
+	go run ./cmd/stress -mode=dispatch -c=20 -d=30s -objects=50 -dispatch=http://localhost:8880
+
 # ─── Docker ────────────────────────────────────────────────
 
 docker-build:
@@ -88,6 +103,9 @@ docker-up:
 
 docker-down:
 	docker compose down -v
+
+docker-up-nat:
+	docker compose up -d gateway edge-agent-nat
 
 # ─── Lint / Vet ────────────────────────────────────────────
 

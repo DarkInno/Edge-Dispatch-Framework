@@ -24,8 +24,27 @@ type CacheStats struct {
 }
 
 type cacheMeta struct {
-	Size       int64 `json:"size"`
 	LastAccess int64 `json:"last_access"` // unix nano
+	Size       int64 `json:"size"`
+}
+
+var cacheMetaPool = sync.Pool{
+	New: func() any {
+		return new(cacheMeta)
+	},
+}
+
+var evictEntryPool = sync.Pool{
+	New: func() any {
+		s := make([]evictEntry, 0, 64)
+		return &s
+	},
+}
+
+type evictEntry struct {
+	key        string
+	lastAccess int64
+	size       int64
 }
 
 type Cache struct {
@@ -50,8 +69,8 @@ func NewCache(dir string, maxGB int64) (*Cache, error) {
 		dir:         dir,
 		maxGB:       maxGB,
 		maxBytes:    maxGB * 1024 * 1024 * 1024,
-		accessTimes: make(map[string]int64),
-		sizes:       make(map[string]int64),
+		accessTimes: make(map[string]int64, 256),
+		sizes:       make(map[string]int64, 256),
 	}
 
 	var totalSize int64
@@ -66,14 +85,16 @@ func NewCache(dir string, maxGB int64) (*Cache, error) {
 		if err != nil {
 			continue
 		}
-		var m cacheMeta
-		if err := json.Unmarshal(data, &m); err != nil {
+		m := cacheMetaPool.Get().(*cacheMeta)
+		if err := json.Unmarshal(data, m); err != nil {
+			cacheMetaPool.Put(m)
 			continue
 		}
 		totalSize += m.Size
 		totalCount++
 		c.accessTimes[entry.Name()] = m.LastAccess
 		c.sizes[entry.Name()] = m.Size
+		cacheMetaPool.Put(m)
 	}
 	c.size.Store(totalSize)
 	c.count.Store(totalCount)
@@ -95,11 +116,9 @@ func (c *Cache) metaPath(key string) string {
 }
 
 func (c *Cache) Get(ctx context.Context, key string) (io.ReadCloser, int64, error) {
-	c.mu.RLock()
 	kp := c.keyPath(key)
-	c.mu.RUnlock()
-
 	cp := filepath.Join(kp, "content")
+
 	f, err := os.Open(cp)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -115,11 +134,12 @@ func (c *Cache) Get(ctx context.Context, key string) (io.ReadCloser, int64, erro
 		return nil, 0, fmt.Errorf("stat cache: %w", err)
 	}
 
-	c.accessMu.Lock()
-	c.accessTimes[filepath.Base(kp)] = time.Now().UnixNano()
-	c.accessMu.Unlock()
-
 	c.hits.Add(1)
+	go func() {
+		c.accessMu.Lock()
+		c.accessTimes[filepath.Base(kp)] = time.Now().UnixNano()
+		c.accessMu.Unlock()
+	}()
 	return f, fi.Size(), nil
 }
 
@@ -147,8 +167,11 @@ func (c *Cache) Put(ctx context.Context, key string, data io.Reader, size int64)
 	_ = f.Sync()
 
 	now := time.Now().UnixNano()
-	meta := cacheMeta{Size: written, LastAccess: now}
-	metaBytes, _ := json.Marshal(meta)
+	m := cacheMetaPool.Get().(*cacheMeta)
+	m.Size = written
+	m.LastAccess = now
+	metaBytes, _ := json.Marshal(m)
+	cacheMetaPool.Put(m)
 	mp := filepath.Join(kp, "meta.json")
 	if err := os.WriteFile(mp, metaBytes, 0o644); err != nil {
 		return fmt.Errorf("write meta: %w", err)
@@ -174,9 +197,8 @@ func (c *Cache) Put(ctx context.Context, key string, data io.Reader, size int64)
 }
 
 func (c *Cache) Has(ctx context.Context, key string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	_, err := os.Stat(c.contentPath(key))
+	cp := c.contentPath(key)
+	_, err := os.Stat(cp)
 	return err == nil
 }
 
@@ -189,10 +211,11 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 
 	var metaSize int64
 	if data, err := os.ReadFile(mp); err == nil {
-		var m cacheMeta
-		if json.Unmarshal(data, &m) == nil {
+		m := cacheMetaPool.Get().(*cacheMeta)
+		if json.Unmarshal(data, m) == nil {
 			metaSize = m.Size
 		}
+		cacheMetaPool.Put(m)
 	}
 
 	if err := os.RemoveAll(kp); err != nil {
@@ -227,20 +250,16 @@ func (c *Cache) Evict(ctx context.Context, targetBytes int64) error {
 }
 
 func (c *Cache) evict(ctx context.Context, targetBytes int64) error {
-	type entry struct {
-		key        string
-		lastAccess int64
-		size       int64
-	}
+	entriesPtr := evictEntryPool.Get().(*[]evictEntry)
+	entries := (*entriesPtr)[:0]
 
 	c.accessMu.Lock()
-	var entries []entry
 	for k, v := range c.accessTimes {
 		sz, ok := c.sizes[k]
 		if !ok {
 			continue
 		}
-		entries = append(entries, entry{
+		entries = append(entries, evictEntry{
 			key:        k,
 			lastAccess: v,
 			size:       sz,
@@ -273,10 +292,53 @@ func (c *Cache) evict(ctx context.Context, targetBytes int64) error {
 		c.size.Add(-e.size)
 	}
 
+	*entriesPtr = entries
+	evictEntryPool.Put(entriesPtr)
+
 	slog.Info("cache eviction completed", "freed_bytes", freed, "target_bytes", targetBytes)
 	return nil
 }
 
 func (c *Cache) Close() error {
 	return nil
+}
+
+// HotKeys returns the most recently accessed cache keys, suitable for content summary.
+func (c *Cache) HotKeys(limit int) []string {
+	c.accessMu.RLock()
+	defer c.accessMu.RUnlock()
+
+	type kv struct {
+		key        string
+		lastAccess int64
+	}
+	items := make([]kv, 0, len(c.accessTimes))
+	for k, t := range c.accessTimes {
+		items = append(items, kv{key: k, lastAccess: t})
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].lastAccess > items[j].lastAccess
+	})
+
+	if limit > len(items) {
+		limit = len(items)
+	}
+	keys := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		keys[i] = items[i].key
+	}
+	return keys
+}
+
+// AllKeys returns the full set of cached keys.
+func (c *Cache) AllKeys() []string {
+	c.accessMu.RLock()
+	defer c.accessMu.RUnlock()
+
+	keys := make([]string, 0, len(c.accessTimes))
+	for k := range c.accessTimes {
+		keys = append(keys, k)
+	}
+	return keys
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
+	"github.com/darkinno/edge-dispatch-framework/internal/contentindex"
 	"github.com/darkinno/edge-dispatch-framework/internal/models"
 )
 
@@ -44,6 +45,12 @@ func (r *Reporter) SetNodeID(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nodeID = id
+}
+
+func (r *Reporter) NodeID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nodeID
 }
 
 func (r *Reporter) Start(ctx context.Context) error {
@@ -104,7 +111,7 @@ func (r *Reporter) ReportOnce(ctx context.Context) error {
 		NodeID: nid,
 		TS:     time.Now().Unix(),
 		Runtime: models.NodeRuntime{
-			CPU:        0, // gopsutil not imported; CPU reporting optional
+			CPU:        0,
 			MemMB:      int64(memStats.Alloc / (1024 * 1024)),
 			DiskFreeGB: cs.MaxGB - cs.Size/(1024*1024*1024),
 			Conn:       r.server.RequestCount(),
@@ -117,6 +124,7 @@ func (r *Reporter) ReportOnce(ctx context.Context) error {
 		Cache: models.NodeCache{
 			HitRatio: hitRatio,
 		},
+		ContentSummary: r.buildContentSummary(),
 	}
 
 	buf := bufPool.Get().(*bytes.Buffer)
@@ -205,6 +213,35 @@ func (r *Reporter) collectCapabilities() models.Capabilities {
 		MaxUplinkMbps:    1000,
 		SupportsHTTPS:    false,
 	}
+}
+
+func (r *Reporter) buildContentSummary() *models.ContentSummary {
+	allKeys := r.cache.AllKeys()
+	if len(allKeys) == 0 {
+		return nil
+	}
+
+	hotKeys := r.cache.HotKeys(20)
+
+	bf := contentindex.NewBloomFilter(max(len(allKeys), 100), 0.05)
+	for _, k := range allKeys {
+		bf.AddString(k)
+	}
+
+	return &models.ContentSummary{
+		NodeID:      r.nodeID,
+		HotKeys:     hotKeys,
+		BloomFilter: bf.Bytes(),
+		TotalKeys:   int64(len(allKeys)),
+		UpdatedAt:   time.Now().Unix(),
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func parsePort(addr string) int {

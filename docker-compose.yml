@@ -42,6 +42,23 @@ services:
       redis:
         condition: service_healthy
 
+  # Gateway - Unified reverse proxy with tunnel support (v0.3)
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    ports:
+      - "8880:8880"   # HTTP proxy
+      - "7700:7700"   # Tunnel server
+    environment:
+      GW_LISTEN_ADDR: ":8880"
+      GW_TUNNEL_ADDR: ":7700"
+      GW_CONTROL_PLANE_URL: "http://control-plane:8080"
+      GW_AUTH_TOKEN: "demo-tunnel-token-change-in-production"
+    depends_on:
+      - control-plane
+
+  # Public edge agents (direct access)
   edge-agent-1:
     build:
       context: .
@@ -72,6 +89,24 @@ services:
     depends_on:
       - control-plane
 
+  # NAT edge agent (behind NAT, uses tunnel) - v0.3
+  edge-agent-nat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.edge-agent
+    environment:
+      EA_LISTEN_ADDR: ":9090"
+      EA_CONTROL_PLANE_URL: "http://control-plane:8080"
+      EA_CACHE_DIR: "/tmp/edf-cache-nat"
+      EA_CACHE_MAX_GB: "1"
+      EA_ORIGIN_URL: "http://origin:7070"
+      EA_NAT_MODE: "true"
+      EA_TUNNEL_SERVER_ADDR: "gateway:7700"
+      EA_TUNNEL_AUTH_TOKEN: "demo-tunnel-token-change-in-production"
+    depends_on:
+      - control-plane
+      - gateway
+
   origin:
     build:
       context: .
@@ -81,6 +116,20 @@ services:
     environment:
       ORIGIN_LISTEN_ADDR: ":7070"
       ORIGIN_DATA_DIR: "/tmp/edf-origin"
+
+  dns-adapter:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dns-adapter
+    ports:
+      - "5353:5353/udp"
+    environment:
+      DNS_LISTEN_ADDR: ":5353"
+      DNS_CONTROL_PLANE_URL: "http://control-plane:8080"
+      DNS_DOMAIN: "edge.local"
+      DNS_TTL_SECONDS: "30"
+    depends_on:
+      - control-plane
 
   stress:
     build:

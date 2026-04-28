@@ -50,7 +50,7 @@ func (r *Registry) RevokeNode(ctx context.Context, nodeID string) error {
 	return r.pg.RevokeNode(ctx, nodeID)
 }
 
-func (r *Registry) ListActiveNodes(ctx context.Context) ([]models.Node, error) {
+func (r *Registry) ListActiveNodes(ctx context.Context) ([]*models.Node, error) {
 	return r.pg.ListActiveNodes(ctx)
 }
 

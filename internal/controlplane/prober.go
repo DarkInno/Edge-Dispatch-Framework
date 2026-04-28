@@ -72,7 +72,31 @@ func (p *Prober) probeAll(ctx context.Context) {
 
 	sem := make(chan struct{}, p.probeConcurrency)
 	var wg sync.WaitGroup
-	nodeIDs := make(map[string]bool)
+	nodeIDs := make(map[string]bool, len(nodes))
+
+	results := make(chan models.ProbeResult, len(nodes)*2)
+	var saveWg sync.WaitGroup
+	saveWg.Add(1)
+	go func() {
+		defer saveWg.Done()
+		batch := make([]models.ProbeResult, 0, 32)
+		for r := range results {
+			batch = append(batch, r)
+			if len(batch) >= 32 {
+				for _, br := range batch {
+					if err := p.pg.SaveProbeResult(ctx, br); err != nil {
+						slog.Error("save probe result", "error", err)
+					}
+				}
+				batch = batch[:0]
+			}
+		}
+		for _, br := range batch {
+			if err := p.pg.SaveProbeResult(ctx, br); err != nil {
+				slog.Error("save probe result", "error", err)
+			}
+		}
+	}()
 
 	for _, node := range nodes {
 		for _, ep := range node.Endpoints {
@@ -84,21 +108,37 @@ func (p *Prober) probeAll(ctx context.Context) {
 
 				result, err := p.ProbeOne(ctx, nid, ep)
 				if err != nil {
-					slog.Warn("probe failed", "node_id", nid, "error", err)
 					return
 				}
-				if err := p.pg.SaveProbeResult(ctx, *result); err != nil {
-					slog.Error("save probe result", "error", err)
-				}
+				results <- *result
 			}(node.NodeID, ep)
 		}
 		nodeIDs[node.NodeID] = true
 	}
 	wg.Wait()
+	close(results)
+	saveWg.Wait()
 
+	type scoreResult struct {
+		nodeID string
+		scores models.NodeScores
+		err    error
+	}
+	scoreCh := make(chan scoreResult, len(nodeIDs))
 	for nid := range nodeIDs {
-		if err := p.UpdateScores(ctx, nid); err != nil {
-			slog.Error("update scores", "node_id", nid, "error", err)
+		go func(nodeID string) {
+			scores, err := p.computeScores(ctx, nodeID)
+			scoreCh <- scoreResult{nodeID: nodeID, scores: scores, err: err}
+		}(nid)
+	}
+	for range nodeIDs {
+		res := <-scoreCh
+		if res.err != nil {
+			slog.Error("compute scores", "node_id", res.nodeID, "error", res.err)
+			continue
+		}
+		if err := p.pg.UpdateNodeScores(ctx, res.nodeID, res.scores); err != nil {
+			slog.Error("update scores", "node_id", res.nodeID, "error", err)
 		}
 	}
 }
@@ -149,10 +189,10 @@ func (p *Prober) ProbeOne(ctx context.Context, nodeID string, endpoint models.En
 	return result, nil
 }
 
-func (p *Prober) UpdateScores(ctx context.Context, nodeID string) error {
+func (p *Prober) computeScores(ctx context.Context, nodeID string) (models.NodeScores, error) {
 	ps, err := p.pg.GetProbeScores(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("get probe scores: %w", err)
+		return models.NodeScores{}, fmt.Errorf("get probe scores: %w", err)
 	}
 
 	reachableScore := ps.SuccessRate5m * 100.0
@@ -171,11 +211,9 @@ func (p *Prober) UpdateScores(ctx context.Context, nodeID string) error {
 		riskScore += 30.0
 	}
 
-	scores := models.NodeScores{
+	return models.NodeScores{
 		ReachableScore: reachableScore,
 		HealthScore:    healthScore,
 		RiskScore:      riskScore,
-	}
-
-	return p.pg.UpdateNodeScores(ctx, nodeID, scores)
+	}, nil
 }
