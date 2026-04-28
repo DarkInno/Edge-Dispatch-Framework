@@ -73,6 +73,12 @@ func clientIP(r *http.Request) string {
 		return strings.TrimSpace(xri)
 	}
 	if host := r.RemoteAddr; host != "" {
+		if len(host) > 0 && host[0] == '[' {
+			if idx := strings.IndexByte(host, ']'); idx > 0 {
+				return host[1:idx]
+			}
+			return host[1:]
+		}
 		if idx := strings.LastIndexByte(host, ':'); idx > 0 {
 			return host[:idx]
 		}
