@@ -1,0 +1,100 @@
+# =============================================================================
+# Control Plane 部署文件
+# =============================================================================
+# 部署在中心节点（主节点）。边缘节点通过 HTTP 连接到此控制面。
+#
+# 快速启动:
+#   docker compose -f docker-compose.cp.yml up -d
+#
+# 安全配置 (必须修改):
+#   CP_TOKEN_SECRET=your-strong-secret docker compose -f docker-compose.cp.yml up -d
+#   GW_AUTH_TOKEN=your-strong-token docker compose -f docker-compose.cp.yml up -d
+#
+# 或创建 .env 文件:
+#   CP_TOKEN_SECRET=your-strong-secret
+#   GW_AUTH_TOKEN=your-strong-token
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: edf
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-edf}
+      POSTGRES_DB: edf
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edf"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  control-plane:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.control-plane
+    ports:
+      - "8080:8080"
+    environment:
+      CP_LISTEN_ADDR: ":8080"
+      CP_PG_URL: "postgres://edf:${PG_PASSWORD:-edf}@postgres:5432/edf?sslmode=disable&pool_max_conns=25&pool_min_conns=5&pool_max_conn_lifetime=30m&pool_max_conn_idle_time=10m&pool_health_check_period=30s"
+      CP_REDIS_ADDR: "redis:6379"
+      CP_TOKEN_SECRET: "${CP_TOKEN_SECRET:-demo-secret-change-in-production}"
+      CP_DEGRADE_TO_ORIGIN: "${CP_DEGRADE_TO_ORIGIN:-true}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    ports:
+      - "8880:8880"
+      - "7700:7700"
+    environment:
+      GW_LISTEN_ADDR: ":8880"
+      GW_TUNNEL_ADDR: ":7700"
+      GW_CONTROL_PLANE_URL: "http://control-plane:8080"
+      GW_AUTH_TOKEN: "${GW_AUTH_TOKEN:-demo-tunnel-token-change-in-production}"
+    depends_on:
+      - control-plane
+    restart: unless-stopped
+    profiles: ["full", "gateway"]
+
+  dns-adapter:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dns-adapter
+    ports:
+      - "53:5353/udp"
+    environment:
+      DNS_LISTEN_ADDR: ":5353"
+      DNS_CONTROL_PLANE_URL: "http://control-plane:8080"
+      DNS_DOMAIN: "${DNS_DOMAIN:-edge.local}"
+      DNS_TTL_SECONDS: "${DNS_TTL_SECONDS:-30}"
+    depends_on:
+      - control-plane
+    restart: unless-stopped
+    profiles: ["full", "dns"]
+
+volumes:
+  pgdata:

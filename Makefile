@@ -1,4 +1,4 @@
-.PHONY: build run clean test docker-up docker-down docker-build
+.PHONY: build run clean test docker-up docker-down docker-build docker-cp-up docker-cp-down docker-cp-up-full docker-edge-up docker-edge-down docker-edge-up-full
 
 build:
 	go build -o bin/control-plane ./cmd/control-plane
@@ -93,7 +93,7 @@ stress-gateway:
 	@echo "Stress test: gateway proxy"
 	go run ./cmd/stress -mode=dispatch -c=20 -d=30s -objects=50 -dispatch=http://localhost:8880
 
-# ─── Docker ────────────────────────────────────────────────
+# ─── Docker (本地演示) ──────────────────────────────────────
 
 docker-build:
 	docker compose build
@@ -104,8 +104,25 @@ docker-up:
 docker-down:
 	docker compose down -v
 
-docker-up-nat:
-	docker compose up -d gateway edge-agent-nat
+# ─── Docker (分离部署) ──────────────────────────────────────
+
+docker-cp-up:
+	docker compose -f docker-compose.cp.yml up -d
+
+docker-cp-down:
+	docker compose -f docker-compose.cp.yml down -v
+
+docker-cp-up-full:
+	docker compose -f docker-compose.cp.yml --profile full up -d
+
+docker-edge-up:
+	docker compose -f docker-compose.edge.yml up -d
+
+docker-edge-down:
+	docker compose -f docker-compose.edge.yml down -v
+
+docker-edge-up-full:
+	docker compose -f docker-compose.edge.yml --profile full up -d
 
 # ─── Lint / Vet ────────────────────────────────────────────
 

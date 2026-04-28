@@ -1,0 +1,49 @@
+# =============================================================================
+# Edge Agent 部署文件
+# =============================================================================
+# 部署在每个边缘节点上。必须设置 EA_CONTROL_PLANE_URL 指向控制面地址。
+#
+# 快速启动:
+#   EA_CONTROL_PLANE_URL=http://<cp-host>:8080 docker compose -f docker-compose.edge.yml up -d
+#
+# 或创建 .env 文件:
+#   EA_CONTROL_PLANE_URL=http://<cp-host>:8080
+#   EA_ORIGIN_URL=http://<origin-host>:7070
+# =============================================================================
+
+services:
+  edge-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.edge-agent
+    ports:
+      - "9090:9090"
+    environment:
+      EA_LISTEN_ADDR: ":9090"
+      EA_CONTROL_PLANE_URL: "${EA_CONTROL_PLANE_URL:-http://localhost:8080}"
+      EA_CACHE_DIR: "${EA_CACHE_DIR:-/tmp/edf-cache}"
+      EA_CACHE_MAX_GB: "${EA_CACHE_MAX_GB:-10}"
+      EA_ORIGIN_URL: "${EA_ORIGIN_URL:-http://localhost:7070}"
+      # NAT 模式（可选）:
+      # EA_NAT_MODE: "${EA_NAT_MODE:-false}"
+      # EA_TUNNEL_SERVER_ADDR: "${EA_TUNNEL_SERVER_ADDR:-}"
+      # EA_TUNNEL_AUTH_TOKEN: "${EA_TUNNEL_AUTH_TOKEN:-}"
+    restart: unless-stopped
+    volumes:
+      - edge_cache:${EA_CACHE_DIR:-/tmp/edf-cache}
+
+  # 示例源站 (可选 — 仅用于开发/测试)
+  origin:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.origin
+    ports:
+      - "7070:7070"
+    environment:
+      ORIGIN_LISTEN_ADDR: ":7070"
+      ORIGIN_DATA_DIR: "/tmp/edf-origin"
+    restart: unless-stopped
+    profiles: ["full", "origin"]
+
+volumes:
+  edge_cache:
