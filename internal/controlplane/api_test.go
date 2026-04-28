@@ -40,6 +40,16 @@ func TestAPIHealthz(t *testing.T) {
 	}
 }
 
+func makeAuthRequest(method, url, body string) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, bytes.NewReader([]byte(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-secret")
+	return req, nil
+}
+
 func TestAPIHandleRegisterBadRequest(t *testing.T) {
 	cfg := &config.ControlPlaneConfig{
 		TokenSecret:    "test-secret",
@@ -52,8 +62,11 @@ func TestAPIHandleRegisterBadRequest(t *testing.T) {
 	ts := httptest.NewServer(api)
 	defer ts.Close()
 
-	// Send invalid JSON
-	resp, err := http.Post(ts.URL+"/v1/nodes/register", "application/json", bytes.NewReader([]byte("bad")))
+	req, err := makeAuthRequest("POST", ts.URL+"/v1/nodes/register", "bad")
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/nodes/register: %v", err)
 	}
@@ -100,7 +113,7 @@ func TestClientIP(t *testing.T) {
 			name:       "X-Forwarded-For multiple",
 			headers:    map[string]string{"X-Forwarded-For": "1.2.3.4, 5.6.7.8"},
 			remoteAddr: "10.0.0.1:12345",
-			want:       "1.2.3.4",
+			want:       "5.6.7.8",
 		},
 		{
 			name:       "X-Real-IP",
@@ -150,7 +163,11 @@ func TestAPIHandleHeartbeatBadRequest(t *testing.T) {
 	ts := httptest.NewServer(api)
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/v1/nodes/heartbeat", "application/json", bytes.NewReader([]byte("bad")))
+	req, err := makeAuthRequest("POST", ts.URL+"/v1/nodes/heartbeat", "bad")
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/nodes/heartbeat: %v", err)
 	}
@@ -173,7 +190,11 @@ func TestAPIHandleDispatchBadRequest(t *testing.T) {
 	ts := httptest.NewServer(api)
 	defer ts.Close()
 
-	resp, err := http.Post(ts.URL+"/v1/dispatch/resolve", "application/json", bytes.NewReader([]byte("bad")))
+	req, err := makeAuthRequest("POST", ts.URL+"/v1/dispatch/resolve", "bad")
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/dispatch/resolve: %v", err)
 	}

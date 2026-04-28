@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math"
+	"net/url"
+	"path"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,10 +16,11 @@ import (
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
 	"github.com/darkinno/edge-dispatch-framework/internal/models"
+	"github.com/darkinno/edge-dispatch-framework/internal/streaming"
 )
 
 type scoredNode struct {
-	node  models.Node
+	node  *models.Node
 	score float64
 }
 
@@ -26,14 +30,49 @@ func (s scoredNodes) Len() int           { return len(s) }
 func (s scoredNodes) Less(i, j int) bool { return s[i].score > s[j].score }
 func (s scoredNodes) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
+var filteredPool = sync.Pool{
+	New: func() any {
+		s := make([]*models.Node, 0, 64)
+		return &s
+	},
+}
+
 type Scheduler struct {
-	nodeCache *NodeCache
-	signer    *auth.Signer
-	cfg       *config.ControlPlaneConfig
+	nodeCache    *NodeCache
+	contentIndex ContentIndexLookup
+	signer       *auth.Signer
+	cfg          *config.ControlPlaneConfig
+	tunnelMgr    TunnelManager
+	streamStrat  *streaming.StreamingStrategy
+}
+
+// TunnelManager interface for checking tunnel connectivity.
+type TunnelManager interface {
+	IsConnected(nodeID string) bool
+}
+
+// ContentIndexLookup is the interface for content-aware scheduling.
+type ContentIndexLookup interface {
+	IsCached(nodeID, key string) (isHot bool, likelyCached bool)
 }
 
 func NewScheduler(nodeCache *NodeCache, signer *auth.Signer, cfg *config.ControlPlaneConfig) *Scheduler {
 	return &Scheduler{nodeCache: nodeCache, signer: signer, cfg: cfg}
+}
+
+// SetContentIndex enables content-aware scheduling.
+func (s *Scheduler) SetContentIndex(ci ContentIndexLookup) {
+	s.contentIndex = ci
+}
+
+// SetTunnelManager sets the tunnel manager for NAT node support (v0.3).
+func (s *Scheduler) SetTunnelManager(tm TunnelManager) {
+	s.tunnelMgr = tm
+}
+
+// SetStreamingStrategy sets the streaming strategy for chunk-aware scoring (v0.4).
+func (s *Scheduler) SetStreamingStrategy(ss *streaming.StreamingStrategy) {
+	s.streamStrat = ss
 }
 
 func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*models.DispatchResponse, error) {
@@ -49,9 +88,9 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 		return s.NoOriginFallback(req), nil
 	}
 
-	scored := make([]scoredNode, len(filtered))
-	for i, n := range filtered {
-		scored[i] = scoredNode{node: n, score: s.score(n, req.Client)}
+	scored := make([]scoredNode, 0, len(filtered))
+	for _, n := range filtered {
+		scored = append(scored, scoredNode{node: n, score: s.scoreKey(*n, req.Client, req.Resource.Key)})
 	}
 
 	sort.Sort(scoredNodes(scored))
@@ -64,17 +103,27 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 	candidates := make([]models.Candidate, 0, len(scored))
 	for _, sn := range scored {
 		endpoint := ""
-		if len(sn.node.Endpoints) > 0 {
+		isPublic := sn.node.Capabilities.InboundReachable
+		isNAT := sn.node.Capabilities.TunnelRequired
+
+		if isPublic && len(sn.node.Endpoints) > 0 {
 			ep := sn.node.Endpoints[0]
 			endpoint = fmt.Sprintf("%s://%s:%d", ep.Scheme, ep.Host, ep.Port)
 		}
+
+		proxyMode := "direct"
+		if isNAT {
+			proxyMode = "tunnel"
+		}
+
 		candidates = append(candidates, models.Candidate{
 			ID:       sn.node.NodeID,
 			Endpoint: endpoint,
 			Weight:   int(sn.score),
 			Meta: models.CandidateMeta{
-				Region: sn.node.Region,
-				ISP:    sn.node.ISP,
+				Region:    sn.node.Region,
+				ISP:       sn.node.ISP,
+				ProxyMode: proxyMode,
 			},
 		})
 	}
@@ -106,6 +155,10 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 }
 
 func (s *Scheduler) score(node models.Node, client models.ClientInfo) float64 {
+	return s.scoreKey(node, client, "")
+}
+
+func (s *Scheduler) scoreKey(node models.Node, client models.ClientInfo, resourceKey string) float64 {
 	score := 0.0
 
 	if node.Region == client.Region && client.Region != "" {
@@ -119,21 +172,67 @@ func (s *Scheduler) score(node models.Node, client models.ClientInfo) float64 {
 	score += node.Scores.HealthScore * 0.2
 	score -= node.Scores.RiskScore * 0.5
 
-	return math.Max(score, 0)
+	if node.Capabilities.TunnelRequired {
+		score -= 15.0
+	}
+
+	if s.contentIndex != nil && resourceKey != "" {
+		isHot, likelyCached := s.contentIndex.IsCached(node.NodeID, resourceKey)
+		if isHot {
+			score += s.cfg.ContentIndex.HotContentAwareWeight
+		} else if likelyCached {
+			score += s.cfg.ContentIndex.ContentAwareWeight
+		}
+	}
+
+	if s.streamStrat != nil && resourceKey != "" {
+		score += s.streamStrat.StreamScore(node.NodeID, resourceKey)
+	}
+
+	if score < 0 {
+		return 0
+	}
+	return score
 }
 
-func (s *Scheduler) filter(ctx context.Context, nodes []models.Node) []models.Node {
-	filtered := make([]models.Node, 0, len(nodes))
+func (s *Scheduler) filter(ctx context.Context, nodes []*models.Node) []*models.Node {
+	filteredPtr := filteredPool.Get().(*[]*models.Node)
+	filtered := (*filteredPtr)[:0]
+
 	for _, n := range nodes {
-		if !n.Capabilities.InboundReachable {
-			continue
+		isPublic := n.Capabilities.InboundReachable
+		isNAT := n.Capabilities.TunnelRequired
+
+		if isPublic {
+			if n.Scores.ReachableScore < 10.0 {
+				continue
+			}
+			filtered = append(filtered, n)
+		} else if isNAT && s.tunnelMgr != nil {
+			if s.tunnelMgr.IsConnected(n.NodeID) {
+				filtered = append(filtered, n)
+			}
 		}
-		if n.Scores.ReachableScore < 10.0 {
-			continue
-		}
-		filtered = append(filtered, n)
 	}
-	return filtered
+
+	result := make([]*models.Node, len(filtered))
+	copy(result, filtered)
+	*filteredPtr = filtered
+	filteredPool.Put(filteredPtr)
+
+	return result
+}
+
+func sanitizeResourceKey(key string) string {
+	key = strings.TrimSpace(key)
+	key = strings.ReplaceAll(key, "\\", "/")
+	for _, p := range strings.Split(key, "/") {
+		p = strings.TrimSpace(p)
+		if p == "." || p == ".." {
+			return ""
+		}
+	}
+	return key
 }
 
 func (s *Scheduler) NoOriginFallback(req models.DispatchRequest) *models.DispatchResponse {
@@ -145,13 +244,29 @@ func (s *Scheduler) NoOriginFallback(req models.DispatchRequest) *models.Dispatc
 		}
 	}
 
+	originURL := s.cfg.OriginURL
+	if originURL == "" {
+		originURL = "http://localhost:7070"
+	}
+
+	key := sanitizeResourceKey(req.Resource.Key)
+	if key == "" {
+		key = "unknown"
+	}
+
+	u, err := url.Parse(originURL)
+	if err != nil {
+		u = &url.URL{Scheme: "http", Host: "localhost:7070"}
+	}
+	u.Path = path.Join(u.Path, key)
+
 	return &models.DispatchResponse{
 		RequestID: uuid.New().String(),
 		TTLMs:     s.cfg.DefaultTTLMs,
 		Candidates: []models.Candidate{
 			{
 				ID:       "origin",
-				Endpoint: "http://localhost:7070/" + req.Resource.Key,
+				Endpoint: u.String(),
 				Weight:   1,
 			},
 		},

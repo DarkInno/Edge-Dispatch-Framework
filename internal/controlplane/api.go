@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,6 +34,110 @@ type API struct {
 	cfg       *config.ControlPlaneConfig
 }
 
+type rateLimiter struct {
+	rate     int64
+	burst    int64
+	tokens   atomic.Int64
+	lastTime atomic.Int64
+}
+
+func newRateLimiter(rate, burst int64) *rateLimiter {
+	rl := &rateLimiter{rate: rate, burst: burst}
+	rl.tokens.Store(burst)
+	rl.lastTime.Store(time.Now().UnixNano())
+	return rl
+}
+
+func (rl *rateLimiter) Allow() bool {
+	now := time.Now().UnixNano()
+	last := rl.lastTime.Load()
+	elapsed := now - last
+	newTokens := elapsed * rl.rate / int64(time.Second)
+	if newTokens <= 0 {
+		tokens := rl.tokens.Load()
+		if tokens <= 0 {
+			return false
+		}
+		rl.tokens.Add(-1)
+		return true
+	}
+	for {
+		old := rl.tokens.Load()
+		nv := old + newTokens
+		if nv > rl.burst {
+			nv = rl.burst
+		}
+		if nv <= 0 {
+			return false
+		}
+		if rl.tokens.CompareAndSwap(old, nv-1) {
+			rl.lastTime.Store(now)
+			return true
+		}
+	}
+}
+
+func withRateLimit(rl *rateLimiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !rl.Allow() {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"too many requests"}}`))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func withAPICOMmonHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
+}
+
+type apiKeyAuth struct {
+	validKeys map[string]bool
+	enabled   bool
+}
+
+func newAPIKeyAuth(secret string) *apiKeyAuth {
+	a := &apiKeyAuth{validKeys: make(map[string]bool)}
+	if secret != "" {
+		a.enabled = true
+		a.validKeys[secret] = true
+	}
+	return a
+}
+
+func (a *apiKeyAuth) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.enabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"missing or invalid authorization"}}`))
+			return
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if !a.validKeys[token] {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"invalid api key"}}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg *config.ControlPlaneConfig) http.Handler {
 	api := &API{
 		registry:  registry,
@@ -42,12 +148,20 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 	}
 
 	r := chi.NewRouter()
-	r.Post("/v1/nodes/register", api.handleRegister)
-	r.Post("/v1/nodes/heartbeat", api.handleHeartbeat)
-	r.Get("/v1/nodes/{nodeID}", api.handleGetNode)
-	r.Delete("/v1/nodes/{nodeID}", api.handleRevokeNode)
-	r.Post("/v1/dispatch/resolve", api.handleDispatch)
-	r.Get("/obj/{key}", api.handleObjectIngress)
+	rl := newRateLimiter(1000, 2000)
+	r.Use(withRateLimit(rl))
+	r.Use(withAPICOMmonHeaders)
+
+	auth := newAPIKeyAuth(cfg.TokenSecret)
+	r.Group(func(r chi.Router) {
+		r.Use(auth.middleware)
+		r.Post("/v1/nodes/register", api.handleRegister)
+		r.Post("/v1/nodes/heartbeat", api.handleHeartbeat)
+		r.Get("/v1/nodes/{nodeID}", api.handleGetNode)
+		r.Delete("/v1/nodes/{nodeID}", api.handleRevokeNode)
+		r.Post("/v1/dispatch/resolve", api.handleDispatch)
+		r.Get("/obj/{key}", api.handleObjectIngress)
+	})
 	r.Get("/healthz", api.handleHealthz)
 
 	return r
@@ -86,8 +200,8 @@ func (a *API) writeError(w http.ResponseWriter, status int, code, message string
 
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx > 0 {
-			return strings.TrimSpace(xff[:idx])
+		if idx := strings.LastIndex(xff, ","); idx > 0 {
+			return strings.TrimSpace(xff[idx+1:])
 		}
 		return strings.TrimSpace(xff)
 	}
@@ -107,6 +221,27 @@ func clientIP(r *http.Request) string {
 		return host
 	}
 	return ""
+}
+
+var ipCache sync.Map
+
+func cachedClientIP(r *http.Request) string {
+	raw := r.Header.Get("X-Forwarded-For")
+	if raw == "" {
+		raw = r.Header.Get("X-Real-IP")
+	}
+	if raw == "" {
+		raw = r.RemoteAddr
+	}
+	if raw == "" {
+		return ""
+	}
+	if v, ok := ipCache.Load(raw); ok {
+		return v.(string)
+	}
+	ip := clientIP(r)
+	ipCache.Store(raw, ip)
+	return ip
 }
 
 func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +271,8 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := a.registry.Register(r.Context(), req)
 	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "REGISTER_FAILED", err.Error())
+		slog.Error("register failed", "err", err)
+		a.writeError(w, http.StatusInternalServerError, "REGISTER_FAILED", "internal server error")
 		return
 	}
 
@@ -167,7 +303,8 @@ func (a *API) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.heartbeat.ProcessHeartbeat(r.Context(), req); err != nil {
-		a.writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", err.Error())
+		slog.Error("heartbeat failed", "err", err)
+		a.writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", "internal server error")
 		return
 	}
 
@@ -190,7 +327,8 @@ func (a *API) handleRevokeNode(w http.ResponseWriter, r *http.Request) {
 	nodeID := chi.URLParam(r, "nodeID")
 
 	if err := a.registry.RevokeNode(r.Context(), nodeID); err != nil {
-		a.writeError(w, http.StatusInternalServerError, "REVOKE_FAILED", err.Error())
+		slog.Error("revoke node failed", "err", err)
+		a.writeError(w, http.StatusInternalServerError, "REVOKE_FAILED", "internal server error")
 		return
 	}
 
@@ -216,7 +354,7 @@ func (a *API) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	req.Client.IP = strings.TrimSpace(req.Client.IP)
 	if req.Client.IP == "" {
-		req.Client.IP = clientIP(r)
+		req.Client.IP = cachedClientIP(r)
 	}
 	req.Resource.Key = strings.TrimSpace(req.Resource.Key)
 	if req.Resource.Key == "" {
@@ -231,7 +369,8 @@ func (a *API) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := a.scheduler.Resolve(r.Context(), req)
 	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "DISPATCH_FAILED", err.Error())
+		slog.Error("dispatch failed", "err", err)
+		a.writeError(w, http.StatusInternalServerError, "DISPATCH_FAILED", "internal server error")
 		return
 	}
 
@@ -240,10 +379,11 @@ func (a *API) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleObjectIngress(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
+	key = sanitizeResourceKey(key)
 
 	req := models.DispatchRequest{
 		Client: models.ClientInfo{
-			IP: clientIP(r),
+			IP: cachedClientIP(r),
 		},
 		Resource: models.ResourceInfo{
 			Type:   "object",
@@ -261,7 +401,7 @@ func (a *API) handleObjectIngress(w http.ResponseWriter, r *http.Request) {
 	top := resp.Candidates[0]
 	redirectURL := fmt.Sprintf("%s/%s", top.Endpoint, key)
 	if resp.Token.Value != "" {
-		redirectURL += "?token=" + resp.Token.Value
+		redirectURL += "?token=" + url.QueryEscape(resp.Token.Value)
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }

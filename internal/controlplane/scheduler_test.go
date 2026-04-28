@@ -119,7 +119,7 @@ func TestScore(t *testing.T) {
 func TestFilter(t *testing.T) {
 	s := &Scheduler{}
 
-	nodes := []models.Node{
+	nodes := []*models.Node{
 		{
 			NodeID: "n1",
 			Capabilities: models.Capabilities{
@@ -190,7 +190,7 @@ func TestNoOriginFallback(t *testing.T) {
 	})
 }
 
-func getIDs(nodes []models.Node) []string {
+func getIDs(nodes []*models.Node) []string {
 	ids := make([]string, len(nodes))
 	for i, n := range nodes {
 		ids[i] = n.NodeID
