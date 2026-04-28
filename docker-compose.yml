@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: edf
+      POSTGRES_PASSWORD: edf
+      POSTGRES_DB: edf
+    ports:
+      - "15432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edf"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  control-plane:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.control-plane
+    ports:
+      - "8080:8080"
+    environment:
+      CP_LISTEN_ADDR: ":8080"
+      CP_PG_URL: "postgres://edf:edf@postgres:5432/edf?sslmode=disable"
+      CP_REDIS_ADDR: "redis:6379"
+      CP_TOKEN_SECRET: "demo-secret-change-in-production"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  edge-agent-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.edge-agent
+    ports:
+      - "9090:9090"
+    environment:
+      EA_LISTEN_ADDR: ":9090"
+      EA_CONTROL_PLANE_URL: "http://control-plane:8080"
+      EA_CACHE_DIR: "/tmp/edf-cache-1"
+      EA_CACHE_MAX_GB: "1"
+      EA_ORIGIN_URL: "http://origin:7070"
+    depends_on:
+      - control-plane
+
+  edge-agent-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.edge-agent
+    ports:
+      - "9091:9090"
+    environment:
+      EA_LISTEN_ADDR: ":9090"
+      EA_CONTROL_PLANE_URL: "http://control-plane:8080"
+      EA_CACHE_DIR: "/tmp/edf-cache-2"
+      EA_CACHE_MAX_GB: "1"
+      EA_ORIGIN_URL: "http://origin:7070"
+    depends_on:
+      - control-plane
+
+  origin:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.origin
+    ports:
+      - "7070:7070"
+    environment:
+      ORIGIN_LISTEN_ADDR: ":7070"
+      ORIGIN_DATA_DIR: "/tmp/edf-origin"
+
+volumes:
+  pgdata:
