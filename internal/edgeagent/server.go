@@ -2,6 +2,7 @@ package edgeagent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -18,12 +19,13 @@ import (
 
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
+	"github.com/darkinno/edge-dispatch-framework/internal/streaming"
 )
 
 func extractClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx > 0 {
-			return strings.TrimSpace(xff[:idx])
+		if idx := strings.LastIndex(xff, ","); idx > 0 {
+			return strings.TrimSpace(xff[idx+1:])
 		}
 		return strings.TrimSpace(xff)
 	}
@@ -52,13 +54,14 @@ type serverMetrics struct {
 }
 
 type Server struct {
-	cache    *Cache
-	fetcher  *Fetcher
-	cfg      *config.EdgeAgentConfig
-	signer   *auth.Signer
-	metrics  serverMetrics
-	httpSrv  *http.Server
-	listener net.Listener
+	cache     *Cache
+	fetcher   *Fetcher
+	cfg       *config.EdgeAgentConfig
+	signer    *auth.Signer
+	metrics   serverMetrics
+	httpSrv   *http.Server
+	listener  net.Listener
+	streamH   *streaming.Handler
 }
 
 func NewServer(cache *Cache, fetcher *Fetcher, cfg *config.EdgeAgentConfig) *Server {
@@ -70,20 +73,101 @@ func NewServer(cache *Cache, fetcher *Fetcher, cfg *config.EdgeAgentConfig) *Ser
 	}
 }
 
+// WithStreaming attaches a streaming handler for HLS/DASH support (v0.4).
+func (s *Server) WithStreaming(handler *streaming.Handler) *Server {
+	s.streamH = handler
+	return s
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/obj/", s.handleObject)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/metrics", s.handleMetrics)
-	return mux
+	return withCommonHeaders(withGzipCompression(mux))
+}
+
+var commonRespHeaders = map[string]string{
+	"Connection":        "keep-alive",
+	"Keep-Alive":        "timeout=120, max=1000",
+	"X-Content-Type-Options": "nosniff",
+}
+
+func withCommonHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range commonRespHeaders {
+			w.Header().Set(k, v)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type gzipResponseWriter struct {
+	io.Writer
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *gzipResponseWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	ct := w.ResponseWriter.Header().Get("Content-Type")
+	if !isCompressible(ct) {
+		w.Writer = w.ResponseWriter
+		w.ResponseWriter.Header().Del("Content-Encoding")
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.Writer.Write(b)
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if f, ok := w.Writer.(http.Flusher); ok {
+		f.Flush()
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func isCompressible(ct string) bool {
+	if ct == "" {
+		return true
+	}
+	return strings.HasPrefix(ct, "application/json") ||
+		strings.HasPrefix(ct, "text/") ||
+		strings.HasPrefix(ct, "application/javascript") ||
+		strings.HasPrefix(ct, "application/xml")
+}
+
+func withGzipCompression(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		defer gz.Close()
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+		next.ServeHTTP(&gzipResponseWriter{Writer: gz, ResponseWriter: w}, r)
+	})
 }
 
 func (s *Server) Start(ctx context.Context) error {
 	s.httpSrv = &http.Server{
-		Handler:      s.Handler(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Handler:           s.Handler(),
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	var ln net.Listener
@@ -93,7 +177,12 @@ func (s *Server) Start(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("load tls cert: %w", err)
 		}
-		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		tlsCfg := &tls.Config{
+			Certificates:     []tls.Certificate{cert},
+			MinVersion:       tls.VersionTLS12,
+			SessionTicketsDisabled: false,
+		}
+		s.httpSrv.TLSConfig = tlsCfg
 		ln, err = tls.Listen("tcp", s.cfg.ListenAddr, tlsCfg)
 	} else {
 		ln, err = net.Listen("tcp", s.cfg.ListenAddr)
@@ -130,16 +219,25 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify token with IP binding
-	token := r.URL.Query().Get("token")
-	if token != "" {
-		clientIP := extractClientIP(r)
-		if _, err := s.signer.VerifyWithIP(token, clientIP); err != nil {
-			slog.Warn("invalid token", "err", err, "client_ip", clientIP)
-			http.Error(w, "forbidden", http.StatusForbidden)
-			s.metrics.errors.Add(1)
-			return
-		}
+	// Verify token with IP binding (mandatory when signer is configured)
+	token := r.Header.Get("Authorization")
+	if token != "" && strings.HasPrefix(token, "Bearer ") {
+		token = strings.TrimPrefix(token, "Bearer ")
+	} else {
+		token = r.URL.Query().Get("token")
+	}
+	if token == "" {
+		slog.Warn("missing authentication token", "client_ip", extractClientIP(r))
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		s.metrics.errors.Add(1)
+		return
+	}
+	clientIP := extractClientIP(r)
+	if _, err := s.signer.VerifyWithIP(token, clientIP); err != nil {
+		slog.Warn("invalid token", "err", err, "client_ip", clientIP)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		s.metrics.errors.Add(1)
+		return
 	}
 
 	// Extract key from /obj/{key}
@@ -152,6 +250,12 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rangeHeader := r.Header.Get("Range")
+
+	// Intercept streaming requests (v0.4)
+	if s.streamH != nil && s.streamH.IsStreamingRequest(key) {
+		s.handleStreamingRequest(w, r, key)
+		return
+	}
 
 	// Try cache first
 	reader, contentLen, err := s.cache.Get(r.Context(), key)
@@ -259,12 +363,16 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	cacheStats := s.cache.Stats()
 
 	data := map[string]interface{}{
-		"requests":    s.metrics.requests.Load(),
-		"cache_hits":  s.metrics.cacheHits.Load(),
+		"requests":     s.metrics.requests.Load(),
+		"cache_hits":   s.metrics.cacheHits.Load(),
 		"cache_misses": s.metrics.cacheMisses.Load(),
-		"bytes_sent":  s.metrics.bytesSent.Load(),
-		"errors":      s.metrics.errors.Load(),
-		"cache":       cacheStats,
+		"bytes_sent":   s.metrics.bytesSent.Load(),
+		"errors":       s.metrics.errors.Load(),
+		"cache":        cacheStats,
+	}
+
+	if s.streamH != nil {
+		data["streaming"] = s.streamH.Metrics()
 	}
 
 	buf := bufPool.Get().(*bytes.Buffer)
@@ -280,6 +388,63 @@ func (s *Server) CacheHits() int64    { return s.metrics.cacheHits.Load() }
 func (s *Server) CacheMisses() int64  { return s.metrics.cacheMisses.Load() }
 func (s *Server) BytesSent() int64    { return s.metrics.bytesSent.Load() }
 func (s *Server) ErrorCount() int64   { return s.metrics.errors.Load() }
+
+// handleStreamingRequest processes HLS/DASH chunk requests through the
+// sliding window cache and prefetch pipeline (v0.4).
+func (s *Server) handleStreamingRequest(w http.ResponseWriter, r *http.Request, key string) {
+	if s.streamH.IsManifestRequest(key) {
+		s.handleManifestRequest(w, r, key)
+		return
+	}
+
+	fetchFn := func(ctx context.Context, k string) (io.ReadCloser, int64, string, error) {
+		fr, err := s.fetcher.Fetch(ctx, k)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		return fr.Body, fr.ContentLength, fr.ContentType, nil
+	}
+
+	data, _, fromCache, err := s.streamH.HandleStreamingRequest(r.Context(), key, fetchFn)
+	if err != nil {
+		slog.Error("streaming request failed", "key", key, "err", err)
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		s.metrics.errors.Add(1)
+		return
+	}
+
+	if fromCache {
+		s.metrics.cacheHits.Add(1)
+	} else {
+		s.metrics.cacheMisses.Add(1)
+	}
+	s.metrics.bytesSent.Add(int64(len(data)))
+
+	streaming.ServeStreamingResponse(w, data, fromCache)
+}
+
+func (s *Server) handleManifestRequest(w http.ResponseWriter, r *http.Request, key string) {
+	fetchFn := func(ctx context.Context, k string) (io.ReadCloser, int64, string, error) {
+		fr, err := s.fetcher.Fetch(ctx, k)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		return fr.Body, fr.ContentLength, fr.ContentType, nil
+	}
+
+	_, data, err := s.streamH.HandleManifestRequest(r.Context(), key, fetchFn)
+	if err != nil {
+		slog.Error("manifest request failed", "key", key, "err", err)
+	}
+
+	if data != nil {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Write(data)
+	} else {
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		s.metrics.errors.Add(1)
+	}
+}
 
 func parseRangeHeader(rh string, contentLen int64) (int64, int64, error) {
 	if rh == "" {
