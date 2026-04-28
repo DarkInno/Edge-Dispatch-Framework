@@ -107,19 +107,31 @@ func (r *Reporter) ReportOnce(ctx context.Context) error {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
+	delta := r.server.GetMetricsDelta()
+	intervalSec := r.cfg.HeartbeatInterval.Seconds()
+	var egressMbps float64
+	var errRate float64
+	if intervalSec > 0 {
+		egressMbps = float64(delta.BytesSent*8) / (intervalSec * 1e6)
+	}
+	if delta.Requests > 0 {
+		errRate = float64(delta.Errors) / float64(delta.Requests)
+	}
+	cpuLoad := float64(runtime.NumGoroutine()) / float64(runtime.NumCPU())
+
 	hb := models.HeartbeatRequest{
 		NodeID: nid,
 		TS:     time.Now().Unix(),
 		Runtime: models.NodeRuntime{
-			CPU:        0,
+			CPU:        cpuLoad,
 			MemMB:      int64(memStats.Alloc / (1024 * 1024)),
 			DiskFreeGB: cs.MaxGB - cs.Size/(1024*1024*1024),
 			Conn:       r.server.RequestCount(),
 		},
 		Traffic: models.NodeTraffic{
-			EgressMbps:  0,
+			EgressMbps:  egressMbps,
 			IngressMbps: 0,
-			Err5xxRate:  0,
+			Err5xxRate:  errRate,
 		},
 		Cache: models.NodeCache{
 			HitRatio: hitRatio,

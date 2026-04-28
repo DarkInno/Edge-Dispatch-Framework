@@ -19,19 +19,81 @@ type Store struct {
 	index   *ContentIndex
 	cfg     *config.ContentIndexConfig
 	mu      sync.RWMutex
+	stopCh  chan struct{}
+	stopped bool
 }
 
 // NewStore creates a content index store with auto-migration.
 func NewStore(ctx context.Context, pool *pgxpool.Pool, cfg *config.ContentIndexConfig) (*Store, error) {
 	s := &Store{
-		pool:  pool,
-		index: NewContentIndex(),
-		cfg:   cfg,
+		pool:   pool,
+		index:  NewContentIndex(),
+		cfg:    cfg,
+		stopCh: make(chan struct{}),
 	}
 	if err := s.migrate(ctx); err != nil {
 		return nil, fmt.Errorf("migrate content index: %w", err)
 	}
 	return s, nil
+}
+
+// StartCleanup begins a background goroutine that periodically removes stale hot keys.
+func (s *Store) StartCleanup(ctx context.Context) {
+	interval := s.cfg.HotKeyTTL
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	go s.cleanupLoop(ctx, interval)
+	slog.Info("content index cleanup started", "interval", interval)
+}
+
+func (s *Store) cleanupLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.expireStaleHotKeys(ctx)
+		}
+	}
+}
+
+func (s *Store) expireStaleHotKeys(ctx context.Context) {
+	cutoff := time.Now().Unix() - int64(s.cfg.HotKeyTTL.Seconds())
+	if cutoff <= 0 {
+		return
+	}
+
+	result, err := s.pool.Exec(ctx, `
+		DELETE FROM content_index
+		WHERE is_hot = true AND last_seen_at < $1
+	`, cutoff)
+	if err != nil {
+		slog.Warn("expire stale hot keys failed", "err", err)
+		return
+	}
+
+	if result.RowsAffected() > 0 {
+		slog.Debug("expired stale hot keys", "count", result.RowsAffected())
+		if err := s.LoadAll(ctx); err != nil {
+			slog.Warn("reload content index after cleanup failed", "err", err)
+		}
+	}
+}
+
+// Stop stops the cleanup goroutine.
+func (s *Store) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.stopped {
+		s.stopped = true
+		close(s.stopCh)
+	}
 }
 
 func (s *Store) migrate(ctx context.Context) error {

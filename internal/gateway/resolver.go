@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -98,7 +99,7 @@ func (c *ControlPlaneClient) GetNodeEndpoint(nodeID string) (string, bool, error
 	}
 
 	// Fetch from control plane
-	url := fmt.Sprintf("%s/api/v1/nodes/%s", c.baseURL, nodeID)
+	url := fmt.Sprintf("%s/v1/nodes/%s", c.baseURL, nodeID)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return "", false, fmt.Errorf("fetch node: %w", err)
@@ -145,20 +146,12 @@ func (c *ControlPlaneClient) GetBestNode(resourceKey string, clientIP string) (s
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/dispatch/resolve", c.baseURL)
-	httpReq, err := http.NewRequest("POST", url, nil)
+	url := fmt.Sprintf("%s/v1/dispatch/resolve", c.baseURL)
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Use the body
-	_ = body
-
-	// For now, use a simple GET-based approach
-	// In production, this should use POST with the body
-	httpReq.Method = "GET"
-	httpReq.URL.RawQuery = fmt.Sprintf("key=%s&client_ip=%s", resourceKey, clientIP)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

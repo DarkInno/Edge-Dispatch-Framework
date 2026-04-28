@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
+	"github.com/darkinno/edge-dispatch-framework/internal/metrics"
 	"github.com/darkinno/edge-dispatch-framework/internal/models"
 )
 
@@ -32,6 +33,16 @@ type API struct {
 	scheduler *Scheduler
 	policy    *Policy
 	cfg       *config.ControlPlaneConfig
+	metrics   *apiMetrics
+}
+
+type apiMetrics struct {
+	dispatchTotal    *metrics.CounterFn
+	dispatchErrors   *metrics.CounterFn
+	heartbeatTotal   *metrics.CounterFn
+	registerTotal    *metrics.CounterFn
+	nodeStatusGauge  *metrics.GaugeFn
+	rateLimitedTotal *metrics.CounterFn
 }
 
 type rateLimiter struct {
@@ -145,6 +156,7 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 		scheduler: scheduler,
 		policy:    NewPolicy(),
 		cfg:       cfg,
+		metrics:   newAPIMetrics(),
 	}
 
 	r := chi.NewRouter()
@@ -163,8 +175,20 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 		r.Get("/obj/{key}", api.handleObjectIngress)
 	})
 	r.Get("/healthz", api.handleHealthz)
+	r.Get("/metrics", api.handleMetrics)
 
 	return r
+}
+
+func newAPIMetrics() *apiMetrics {
+	return &apiMetrics{
+		dispatchTotal:    metrics.NewCounter("controlplane_dispatch_requests_total", "Total number of dispatch requests"),
+		dispatchErrors:   metrics.NewCounter("controlplane_dispatch_errors_total", "Total number of dispatch errors"),
+		heartbeatTotal:   metrics.NewCounter("controlplane_heartbeat_total", "Total number of heartbeat requests"),
+		registerTotal:    metrics.NewCounter("controlplane_register_total", "Total number of node registrations"),
+		nodeStatusGauge:  metrics.NewGauge("controlplane_node_status", "Current node status count", "status"),
+		rateLimitedTotal: metrics.NewCounter("controlplane_rate_limited_total", "Total number of rate-limited requests"),
+	}
 }
 
 func (a *API) writeJSON(w http.ResponseWriter, status int, v any) {
@@ -245,6 +269,7 @@ func cachedClientIP(r *http.Request) string {
 }
 
 func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
+	a.metrics.registerTotal.Inc()
 	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
 		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
 		return
@@ -302,6 +327,8 @@ func (a *API) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.metrics.heartbeatTotal.Inc()
+
 	if err := a.heartbeat.ProcessHeartbeat(r.Context(), req); err != nil {
 		slog.Error("heartbeat failed", "err", err)
 		a.writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", "internal server error")
@@ -336,6 +363,7 @@ func (a *API) handleRevokeNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleDispatch(w http.ResponseWriter, r *http.Request) {
+	a.metrics.dispatchTotal.Inc()
 	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
 		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
 		return
@@ -369,9 +397,14 @@ func (a *API) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := a.scheduler.Resolve(r.Context(), req)
 	if err != nil {
+		a.metrics.dispatchErrors.Inc()
 		slog.Error("dispatch failed", "err", err)
 		a.writeError(w, http.StatusInternalServerError, "DISPATCH_FAILED", "internal server error")
 		return
+	}
+
+	if len(resp.Candidates) == 0 {
+		a.metrics.dispatchErrors.Inc()
 	}
 
 	a.writeJSON(w, http.StatusOK, resp)
@@ -399,7 +432,7 @@ func (a *API) handleObjectIngress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	top := resp.Candidates[0]
-	redirectURL := fmt.Sprintf("%s/%s", top.Endpoint, key)
+	redirectURL := fmt.Sprintf("%s/obj/%s", top.Endpoint, key)
 	if resp.Token.Value != "" {
 		redirectURL += "?token=" + url.QueryEscape(resp.Token.Value)
 	}
@@ -411,4 +444,15 @@ func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (a *API) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if a.metrics != nil {
+		a.metrics.nodeStatusGauge.Set(float64(a.registry.CountByStatus(string(models.NodeStatusActive))), "active")
+		a.metrics.nodeStatusGauge.Set(float64(a.registry.CountByStatus(string(models.NodeStatusDegraded))), "degraded")
+		a.metrics.nodeStatusGauge.Set(float64(a.registry.CountByStatus(string(models.NodeStatusOffline))), "offline")
+		a.metrics.nodeStatusGauge.Set(float64(a.registry.CountByStatus(string(models.NodeStatusRegistered))), "registered")
+		a.metrics.nodeStatusGauge.Set(float64(a.registry.CountByStatus(string(models.NodeStatusQuarantined))), "quarantined")
+	}
+	metrics.Handler().ServeHTTP(w, r)
 }

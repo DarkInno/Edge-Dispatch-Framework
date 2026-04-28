@@ -19,6 +19,7 @@ import (
 
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
+	"github.com/darkinno/edge-dispatch-framework/internal/metrics"
 	"github.com/darkinno/edge-dispatch-framework/internal/streaming"
 )
 
@@ -53,15 +54,33 @@ type serverMetrics struct {
 	errors      atomic.Int64
 }
 
+type MetricsSnapshot struct {
+	Requests  int64
+	BytesSent int64
+	Errors    int64
+}
+
 type Server struct {
-	cache     *Cache
-	fetcher   *Fetcher
-	cfg       *config.EdgeAgentConfig
-	signer    *auth.Signer
-	metrics   serverMetrics
-	httpSrv   *http.Server
-	listener  net.Listener
-	streamH   *streaming.Handler
+	cache        *Cache
+	fetcher      *Fetcher
+	cfg          *config.EdgeAgentConfig
+	signer       *auth.Signer
+	metrics      serverMetrics
+	lastSnapshot MetricsSnapshot
+	snapshotMu   sync.Mutex
+	httpSrv      *http.Server
+	listener     net.Listener
+	streamH      *streaming.Handler
+	promMetrics  *promMetrics
+}
+
+type promMetrics struct {
+	requestsTotal   *metrics.CounterFn
+	cacheHitsTotal  *metrics.CounterFn
+	cacheMissesTotal *metrics.CounterFn
+	bytesSentTotal  *metrics.CounterFn
+	errorsTotal     *metrics.CounterFn
+	cacheSizeGauge  *metrics.GaugeFn
 }
 
 func NewServer(cache *Cache, fetcher *Fetcher, cfg *config.EdgeAgentConfig) *Server {
@@ -70,6 +89,14 @@ func NewServer(cache *Cache, fetcher *Fetcher, cfg *config.EdgeAgentConfig) *Ser
 		fetcher: fetcher,
 		cfg:     cfg,
 		signer:  auth.NewSigner(cfg.NodeToken),
+		promMetrics: &promMetrics{
+			requestsTotal:    metrics.NewCounter("edge_requests_total", "Total number of requests"),
+			cacheHitsTotal:   metrics.NewCounter("edge_cache_hits_total", "Total number of cache hits"),
+			cacheMissesTotal: metrics.NewCounter("edge_cache_misses_total", "Total number of cache misses"),
+			bytesSentTotal:   metrics.NewCounter("edge_bytes_sent_total", "Total number of bytes sent"),
+			errorsTotal:      metrics.NewCounter("edge_errors_total", "Total number of errors"),
+			cacheSizeGauge:   metrics.NewGauge("edge_cache_size_bytes", "Current cache size in bytes"),
+		},
 	}
 }
 
@@ -362,25 +389,38 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	cacheStats := s.cache.Stats()
 
-	data := map[string]interface{}{
-		"requests":     s.metrics.requests.Load(),
-		"cache_hits":   s.metrics.cacheHits.Load(),
-		"cache_misses": s.metrics.cacheMisses.Load(),
-		"bytes_sent":   s.metrics.bytesSent.Load(),
-		"errors":       s.metrics.errors.Load(),
-		"cache":        cacheStats,
+	if s.promMetrics != nil {
+		s.promMetrics.requestsTotal.Add(float64(s.metrics.requests.Load()))
+		s.promMetrics.cacheHitsTotal.Add(float64(s.metrics.cacheHits.Load()))
+		s.promMetrics.cacheMissesTotal.Add(float64(s.metrics.cacheMisses.Load()))
+		s.promMetrics.bytesSentTotal.Add(float64(s.metrics.bytesSent.Load()))
+		s.promMetrics.errorsTotal.Add(float64(s.metrics.errors.Load()))
+		s.promMetrics.cacheSizeGauge.Set(float64(cacheStats.Size))
 	}
 
-	if s.streamH != nil {
-		data["streaming"] = s.streamH.Metrics()
+	// Serve Prometheus format by default; JSON on ?format=json
+	if r.URL.Query().Get("format") == "json" {
+		data := map[string]interface{}{
+			"requests":     s.metrics.requests.Load(),
+			"cache_hits":   s.metrics.cacheHits.Load(),
+			"cache_misses": s.metrics.cacheMisses.Load(),
+			"bytes_sent":   s.metrics.bytesSent.Load(),
+			"errors":       s.metrics.errors.Load(),
+			"cache":        cacheStats,
+		}
+		if s.streamH != nil {
+			data["streaming"] = s.streamH.Metrics()
+		}
+		buf := bufPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer bufPool.Put(buf)
+		json.NewEncoder(buf).Encode(data)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(buf.Bytes())
+		return
 	}
 
-	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer bufPool.Put(buf)
-	json.NewEncoder(buf).Encode(data)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(buf.Bytes())
+	metrics.Handler().ServeHTTP(w, r)
 }
 
 func (s *Server) RequestCount() int64  { return s.metrics.requests.Load() }
@@ -388,6 +428,38 @@ func (s *Server) CacheHits() int64    { return s.metrics.cacheHits.Load() }
 func (s *Server) CacheMisses() int64  { return s.metrics.cacheMisses.Load() }
 func (s *Server) BytesSent() int64    { return s.metrics.bytesSent.Load() }
 func (s *Server) ErrorCount() int64   { return s.metrics.errors.Load() }
+
+func (s *Server) GetMetricsSnapshot() MetricsSnapshot {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+
+	current := MetricsSnapshot{
+		Requests:  s.metrics.requests.Load(),
+		BytesSent: s.metrics.bytesSent.Load(),
+		Errors:    s.metrics.errors.Load(),
+	}
+	return current
+}
+
+func (s *Server) GetMetricsDelta() MetricsSnapshot {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+
+	current := MetricsSnapshot{
+		Requests:  s.metrics.requests.Load(),
+		BytesSent: s.metrics.bytesSent.Load(),
+		Errors:    s.metrics.errors.Load(),
+	}
+
+	delta := MetricsSnapshot{
+		Requests:  current.Requests - s.lastSnapshot.Requests,
+		BytesSent: current.BytesSent - s.lastSnapshot.BytesSent,
+		Errors:    current.Errors - s.lastSnapshot.Errors,
+	}
+
+	s.lastSnapshot = current
+	return delta
+}
 
 // handleStreamingRequest processes HLS/DASH chunk requests through the
 // sliding window cache and prefetch pipeline (v0.4).

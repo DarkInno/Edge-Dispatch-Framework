@@ -270,6 +270,14 @@ func (s *PGStore) UpdateNodeStatus(ctx context.Context, nodeID string, status mo
 	return err
 }
 
+func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error) {
+	var count int
+	err := s.readPoolOrPrimary().QueryRow(ctx, `
+		SELECT COUNT(*) FROM nodes WHERE status = $1
+	`, status).Scan(&count)
+	return count, err
+}
+
 func (s *PGStore) BatchUpdateNodeStatus(ctx context.Context, updates []struct {
 	NodeID string
 	Status models.NodeStatus

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/darkinno/edge-dispatch-framework/internal/metrics"
 	"github.com/darkinno/edge-dispatch-framework/internal/tunnel"
 )
 
@@ -40,9 +41,6 @@ func DefaultConfig() Config {
 }
 
 // Gateway is the unified reverse proxy gateway for edge dispatch.
-// It serves as an ingress adapter that can proxy requests to:
-// 1. Public edge nodes (direct proxy)
-// 2. NAT edge nodes (via tunnel)
 type Gateway struct {
 	cfg          Config
 	tunnelServer *tunnel.Server
@@ -51,6 +49,13 @@ type Gateway struct {
 	resolver     NodeResolver
 	ctx          context.Context
 	cancel       context.CancelFunc
+	promMetrics  *gwMetrics
+}
+
+type gwMetrics struct {
+	requestsTotal *metrics.CounterFn
+	errorsTotal   *metrics.CounterFn
+	tunnelGauge   *metrics.GaugeFn
 }
 
 // NodeResolver resolves node IDs to their endpoints.
@@ -70,6 +75,19 @@ func New(cfg Config, resolver NodeResolver, logger *slog.Logger) *Gateway {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	gw := &Gateway{
+		cfg:      cfg,
+		resolver: resolver,
+		logger:   logger,
+		ctx:      ctx,
+		cancel:   cancel,
+		promMetrics: &gwMetrics{
+			requestsTotal: metrics.NewCounter("gateway_requests_total", "Total number of proxy requests"),
+			errorsTotal:   metrics.NewCounter("gateway_errors_total", "Total number of proxy errors"),
+			tunnelGauge:   metrics.NewGauge("gateway_active_tunnels", "Number of active tunnel connections"),
+		},
+	}
+
 	// Create tunnel server
 	tunnelCfg := tunnel.ServerConfig{
 		ListenAddr:  cfg.TunnelAddr,
@@ -78,15 +96,9 @@ func New(cfg Config, resolver NodeResolver, logger *slog.Logger) *Gateway {
 		MaxTunnels:  100,
 	}
 	tunnelServer := tunnel.NewServer(tunnelCfg, logger)
+	gw.tunnelServer = tunnelServer
 
-	return &Gateway{
-		cfg:          cfg,
-		tunnelServer: tunnelServer,
-		logger:       logger,
-		resolver:     resolver,
-		ctx:          ctx,
-		cancel:       cancel,
-	}
+	return gw
 }
 
 // Start starts the gateway.
@@ -312,10 +324,22 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	// Basic metrics endpoint (can be extended to Prometheus format)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"active_tunnels":%d}`, g.tunnelServer.Manager().ActiveTunnels())
+	if g.promMetrics != nil && g.tunnelServer != nil {
+		g.promMetrics.tunnelGauge.Set(float64(g.tunnelServer.Manager().ActiveTunnels()))
+	}
+
+	if r.URL.Query().Get("format") == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if g.tunnelServer != nil {
+			fmt.Fprintf(w, `{"active_tunnels":%d}`, g.tunnelServer.Manager().ActiveTunnels())
+		} else {
+			w.Write([]byte(`{"active_tunnels":0}`))
+		}
+		return
+	}
+
+	metrics.Handler().ServeHTTP(w, r)
 }
 
 // extractClientIP extracts the client IP from the request.
