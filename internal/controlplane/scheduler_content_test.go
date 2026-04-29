@@ -53,10 +53,10 @@ func TestContentAwareScoring(t *testing.T) {
 	client := models.ClientInfo{Region: "us-east", ISP: "comcast"}
 
 	// Base score = 30 (region) + 20 (ISP) + 15 (reachable) + 10 (health) = 75
-	baseScore := s.scoreKey(node, client, "")
+	baseScore := s.scoreKey(&node, client, "")
 
 	// Hot key should get +25 bonus
-	hotScore := s.scoreKey(node, client, "hotfile.txt")
+	hotScore := s.scoreKey(&node, client, "hotfile.txt")
 	if hotScore <= baseScore {
 		t.Fatalf("hot key score (%.1f) should be > base score (%.1f)", hotScore, baseScore)
 	}
@@ -65,13 +65,13 @@ func TestContentAwareScoring(t *testing.T) {
 	}
 
 	// Cold key (bloom only) should get +10 bonus
-	coldScore := s.scoreKey(node, client, "cold.txt")
+	coldScore := s.scoreKey(&node, client, "cold.txt")
 	if coldScore != baseScore+10.0 {
 		t.Fatalf("expected cold score %.1f, got %.1f", baseScore+10.0, coldScore)
 	}
 
 	// Unknown key gets no bonus
-	unknownScore := s.scoreKey(node, client, "unknown.txt")
+	unknownScore := s.scoreKey(&node, client, "unknown.txt")
 	if unknownScore != baseScore {
 		t.Fatalf("expected unknown score %.1f, got %.1f", baseScore, unknownScore)
 	}
@@ -91,7 +91,7 @@ func TestContentAwareScoringDisabled(t *testing.T) {
 	}
 	client := models.ClientInfo{Region: "us-east", ISP: "comcast"}
 
-	score := s.scoreKey(node, client, "somefile.txt")
+	score := s.scoreKey(&node, client, "somefile.txt")
 	if score != 75.0 {
 		t.Fatalf("expected 75.0, got %.1f", score)
 	}

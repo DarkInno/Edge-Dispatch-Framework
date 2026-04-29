@@ -23,55 +23,6 @@ type scoredNode struct {
 	endpoint string // pre-computed primary endpoint URL
 }
 
-func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*models.DispatchResponse, error) {
-	nodes, err := s.nodeCache.GetActiveNodes(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list nodes: %w", err)
-	}
-
-	filtered := s.filter(ctx, nodes)
-
-	if len(filtered) == 0 {
-		slog.Warn("no edge nodes available, degrading to origin")
-		return s.NoOriginFallback(req), nil
-	}
-
-	rKey := req.Resource.Key
-	scored := make([]scoredNode, 0, len(filtered))
-	for _, n := range filtered {
-		sn := scoredNode{node: n, score: s.scoreKey(n, req.Client, rKey)}
-		if n.Capabilities.InboundReachable && len(n.Endpoints) > 0 {
-			sn.endpoint = n.Endpoints[0].URL()
-		}
-		scored = append(scored, sn)
-	}
-
-	sort.Sort(scoredNodes(scored))
-
-	maxCandidates := s.cfg.MaxCandidates
-	if len(scored) > maxCandidates {
-		scored = scored[:maxCandidates]
-	}
-
-	candidates := make([]models.Candidate, 0, len(scored))
-	for _, sn := range scored {
-		proxyMode := "direct"
-		if sn.node.Capabilities.TunnelRequired {
-			proxyMode = "tunnel"
-		}
-
-		candidates = append(candidates, models.Candidate{
-			ID:       sn.node.NodeID,
-			Endpoint: sn.endpoint,
-			Weight:   int(sn.score),
-			Meta: models.CandidateMeta{
-				Region:    sn.node.Region,
-				ISP:       sn.node.ISP,
-				ProxyMode: proxyMode,
-			},
-		})
-	}
-
 type scoredNodes []scoredNode
 
 func (s scoredNodes) Len() int           { return len(s) }
@@ -136,9 +87,14 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 		return s.NoOriginFallback(req), nil
 	}
 
+	rKey := req.Resource.Key
 	scored := make([]scoredNode, 0, len(filtered))
 	for _, n := range filtered {
-		scored = append(scored, scoredNode{node: n, score: s.scoreKey(n, req.Client, req.Resource.Key)})
+		sn := scoredNode{node: n, score: s.scoreKey(n, req.Client, rKey)}
+		if n.Capabilities.InboundReachable && len(n.Endpoints) > 0 {
+			sn.endpoint = n.Endpoints[0].URL()
+		}
+		scored = append(scored, sn)
 	}
 
 	sort.Sort(scoredNodes(scored))
@@ -150,26 +106,14 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 
 	candidates := make([]models.Candidate, 0, len(scored))
 	for _, sn := range scored {
-		endpoint := ""
-		isPublic := sn.node.Capabilities.InboundReachable
-		isNAT := sn.node.Capabilities.TunnelRequired
-
-		if isPublic && len(sn.node.Endpoints) > 0 {
-			ep := sn.node.Endpoints[0]
-			endpoint = net.JoinHostPort(ep.Host, strconv.Itoa(int(ep.Port)))
-			if ep.Scheme != "" {
-				endpoint = ep.Scheme + "://" + endpoint
-			}
-		}
-
 		proxyMode := "direct"
-		if isNAT {
+		if sn.node.Capabilities.TunnelRequired {
 			proxyMode = "tunnel"
 		}
 
 		candidates = append(candidates, models.Candidate{
 			ID:       sn.node.NodeID,
-			Endpoint: endpoint,
+			Endpoint: sn.endpoint,
 			Weight:   int(sn.score),
 			Meta: models.CandidateMeta{
 				Region:    sn.node.Region,
@@ -251,7 +195,6 @@ func (s *Scheduler) filter(ctx context.Context, nodes []*models.Node) []*models.
 	filtered := (*filteredPtr)[:0]
 
 	for _, n := range nodes {
-		// Skip disabled and maintenance nodes
 		if n.Status == models.NodeStatusDisabled || n.Status == models.NodeStatusMaintenance {
 			continue
 		}
