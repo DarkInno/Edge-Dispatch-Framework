@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -30,6 +33,9 @@ type config struct {
 	edgeEndpoint    string
 	noBodyRead      bool
 	key             string
+	signKey         string
+	authToken       string
+	natMode         bool
 }
 
 type stats struct {
@@ -167,6 +173,9 @@ func main() {
 	flag.IntVar(&cfg.objects, "objects", 100, "number of unique objects")
 	flag.BoolVar(&cfg.noBodyRead, "no-body", false, "skip reading response body (measure TTFB)")
 	flag.StringVar(&cfg.key, "key", "", "override object key for requests")
+	flag.StringVar(&cfg.signKey, "sign-key", "", "HMAC signing key for edge agent token generation")
+	flag.StringVar(&cfg.authToken, "auth-token", "", "Bearer auth token for control-plane API")
+	flag.BoolVar(&cfg.natMode, "nat", false, "use NAT mode (prefix key with nat/)")
 	flag.Parse()
 
 	log.SetFlags(0)
@@ -224,6 +233,12 @@ func main() {
 		runBenchOrigin(ctx, cfg, st)
 	case "bench-edge":
 		runBenchEdge(ctx, cfg, st)
+	case "bench-gateway":
+		cfg.natMode = true
+		runBenchEdge(ctx, cfg, st)
+	case "bench-nat":
+		cfg.natMode = true
+		runDispatch(ctx, cfg, st)
 	default:
 		log.Fatalf("unknown mode: %s", cfg.mode)
 	}
@@ -237,12 +252,34 @@ func newTransport(host string) *http.Transport {
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:        200,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     60 * time.Second,
+		MaxIdleConns:        1000,
+		MaxIdleConnsPerHost: 1000,
+		MaxConnsPerHost:     1000,
+		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  true,
 		ForceAttemptHTTP2:   false,
 	}
+}
+
+type tokenPayload struct {
+	Key      string `json:"key"`
+	Exp      int64  `json:"exp"`
+	IPPrefix string `json:"ip_prefix,omitempty"`
+}
+
+func signToken(secret, key string) string {
+	if secret == "" {
+		return ""
+	}
+	payload := tokenPayload{
+		Key: key,
+		Exp: time.Now().Add(1 * time.Hour).Unix(),
+	}
+	b, _ := json.Marshal(payload)
+	encoded := base64.RawURLEncoding.EncodeToString(b)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(encoded))
+	return encoded + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func drainBody(resp *http.Response, skip bool) int64 {
@@ -296,12 +333,19 @@ func runDispatch(ctx context.Context, cfg *config, st *stats) {
 	for i := range keys {
 		keys[i] = fmt.Sprintf("video/stress-%04d.mp4", i)
 	}
+	baseURL := cfg.controlPlaneURL
+	if cfg.natMode {
+		baseURL = cfg.edgeEndpoint // use gateway URL for NAT routing
+	}
 
 	runWorkers(ctx, cfg, st, func(w int) func() {
 		return func() {
 			key := keys[w%len(keys)]
-			url := cfg.controlPlaneURL + "/obj/" + key
+			url := baseURL + "/obj/" + key
 			req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+			if cfg.authToken != "" {
+				req.Header.Set("Authorization", "Bearer "+cfg.authToken)
+			}
 
 			start := time.Now()
 			resp, err := client.Do(req)
@@ -345,11 +389,20 @@ func runBenchDispatch(ctx context.Context, cfg *config, st *stats) {
 			buf, _ = json.Marshal(dispReq)
 
 			start := time.Now()
-			resp, err := client.Post(
-				cfg.controlPlaneURL+"/v1/dispatch/resolve",
-				"application/json",
-				strings.NewReader(string(buf)),
-			)
+			var resp *http.Response
+			var err error
+			if cfg.authToken != "" {
+				req, _ := http.NewRequestWithContext(ctx, "POST", cfg.controlPlaneURL+"/v1/dispatch/resolve", strings.NewReader(string(buf)))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+cfg.authToken)
+				resp, err = client.Do(req)
+			} else {
+				resp, err = client.Post(
+					cfg.controlPlaneURL+"/v1/dispatch/resolve",
+					"application/json",
+					strings.NewReader(string(buf)),
+				)
+			}
 			latency := time.Since(start)
 			bodyPool.Put(buf)
 
@@ -400,12 +453,23 @@ func runBenchEdge(ctx context.Context, cfg *config, st *stats) {
 	for i := range keys {
 		keys[i] = fmt.Sprintf("video/stress-%04d.mp4", i)
 	}
+	edgeURL := cfg.edgeEndpoint
+	if cfg.natMode {
+		edgeURL = cfg.controlPlaneURL // route through gateway for NAT
+	}
 
 	runWorkers(ctx, cfg, st, func(w int) func() {
 		return func() {
 			key := keys[w%len(keys)]
-			url := cfg.edgeEndpoint + "/obj/" + key
+			url := edgeURL + "/obj/" + key
+			if cfg.signKey != "" {
+				token := signToken(cfg.signKey, key)
+				url += "?token=" + token
+			}
 			req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+			if cfg.authToken != "" {
+				req.Header.Set("Authorization", "Bearer "+cfg.authToken)
+			}
 
 			start := time.Now()
 			resp, err := client.Do(req)
