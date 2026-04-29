@@ -261,10 +261,13 @@ func (s *PGStore) ListActiveNodes(ctx context.Context) ([]*models.Node, error) {
 }
 
 func (s *PGStore) UpdateNodeStatus(ctx context.Context, nodeID string, status models.NodeStatus) error {
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE nodes SET status = $2, updated_at = NOW() WHERE node_id = $1
 	`, nodeID, status)
 	if err == nil {
+		if tag.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
 		s.InvalidateNodeCache(nodeID)
 	}
 	return err
@@ -392,8 +395,11 @@ func (s *PGStore) GetProbeScores(ctx context.Context, nodeID string) (*models.Pr
 }
 
 func (s *PGStore) RevokeNode(ctx context.Context, nodeID string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM nodes WHERE node_id = $1`, nodeID)
+	tag, err := s.pool.Exec(ctx, `DELETE FROM nodes WHERE node_id = $1`, nodeID)
 	if err == nil {
+		if tag.RowsAffected() == 0 {
+			return pgx.ErrNoRows
+		}
 		s.InvalidateNodeCache(nodeID)
 	}
 	return err
@@ -602,8 +608,8 @@ func (r *RedisStore) SaveHeartbeat(ctx context.Context, hb models.HeartbeatReque
 	binary.BigEndian.PutUint64(tsBuf, uint64(hb.TS))
 	pipe := r.client.Pipeline()
 	pipe.HSet(ctx, key, map[string]interface{}{
-		"d":    data,
-		"ts":   tsBuf,
+		"d":     data,
+		"ts":    tsBuf,
 		"lseen": tsBuf,
 	})
 	pipe.Expire(ctx, key, ttl)
@@ -622,8 +628,8 @@ func (r *RedisStore) PipelineSaveHeartbeats(ctx context.Context, hbs []models.He
 		tsBuf := make([]byte, 8)
 		binary.BigEndian.PutUint64(tsBuf, uint64(hbs[i].TS))
 		pipe.HSet(ctx, key, map[string]interface{}{
-			"d":    data,
-			"ts":   tsBuf,
+			"d":     data,
+			"ts":    tsBuf,
 			"lseen": tsBuf,
 		})
 		pipe.Expire(ctx, key, ttl)

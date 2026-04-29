@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"hash"
 	"net"
 	"sync"
 	"time"
@@ -20,18 +19,14 @@ var hmacPool = sync.Pool{
 
 // TokenPayload is the content signed into a dispatch token.
 type TokenPayload struct {
-	Key    string `json:"key"`
-	Exp    int64  `json:"exp"`
+	Key      string `json:"key"`
+	Exp      int64  `json:"exp"`
 	IPPrefix string `json:"ip_prefix,omitempty"`
 }
 
 // Signer creates and verifies HMAC-signed tokens.
 type Signer struct {
 	secret []byte
-}
-
-var sha256Pool = sync.Pool{
-	New: func() any { return sha256.New() },
 }
 
 // NewSigner creates a new Signer with the given secret.
@@ -51,12 +46,9 @@ func (s *Signer) Sign(p TokenPayload) (string, error) {
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
 
-	inner := sha256Pool.Get().(hash.Hash)
-	inner.Reset()
-	mac := hmac.New(func() hash.Hash { return inner }, s.secret)
+	mac := hmac.New(sha256.New, s.secret)
 	mac.Write([]byte(encoded))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	sha256Pool.Put(inner)
 
 	return encoded + "." + sig, nil
 }
@@ -69,12 +61,9 @@ func (s *Signer) Verify(token string) (*TokenPayload, error) {
 	}
 	encoded, sig := parts[0], parts[1]
 
-	inner := sha256Pool.Get().(hash.Hash)
-	inner.Reset()
-	mac := hmac.New(func() hash.Hash { return inner }, s.secret)
+	mac := hmac.New(sha256.New, s.secret)
 	mac.Write([]byte(encoded))
 	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	sha256Pool.Put(inner)
 
 	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
 		return nil, fmt.Errorf("invalid signature")
