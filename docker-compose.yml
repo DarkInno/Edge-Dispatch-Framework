@@ -48,6 +48,7 @@ services:
       CP_TOKEN_SECRET: "demo-secret-change-in-production"
       CP_ADMIN_ENABLED: "true"
       CP_ADMIN_JWT_SECRET: "demo-jwt-secret-change-in-production"
+      CP_ORIGIN_URL: "http://origin:7070"
     depends_on:
       postgres:
         condition: service_healthy

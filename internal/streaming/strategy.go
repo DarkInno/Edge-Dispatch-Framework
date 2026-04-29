@@ -114,3 +114,27 @@ func (ss *StreamingStrategy) HasStream(nodeID string, streamKey string) bool {
 	}
 	return false
 }
+
+// FindNodesWithStream returns a set of node IDs that have the given stream
+// in their cache. Called once per dispatch instead of N times.
+func (ss *StreamingStrategy) FindNodesWithStream(streamKey string) map[string]bool {
+	if ss.cfg == nil || !ss.cfg.Enabled {
+		return nil
+	}
+
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+
+	result := make(map[string]bool)
+	for nodeID, nodeStreams := range ss.nodeStreams {
+		for _, streams := range nodeStreams {
+			for _, s := range streams {
+				if s == streamKey {
+					result[nodeID] = true
+					break
+				}
+			}
+		}
+	}
+	return result
+}

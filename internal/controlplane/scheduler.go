@@ -1,15 +1,14 @@
 package controlplane
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
@@ -20,14 +19,50 @@ import (
 type scoredNode struct {
 	node     *models.Node
 	score    float64
-	endpoint string // pre-computed primary endpoint URL
+	endpoint string
 }
 
-type scoredNodes []scoredNode
+type scoredHeap struct {
+	nodes []scoredNode
+	max   int
+}
 
-func (s scoredNodes) Len() int           { return len(s) }
-func (s scoredNodes) Less(i, j int) bool { return s[i].score > s[j].score }
-func (s scoredNodes) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
+func (h *scoredHeap) Len() int           { return len(h.nodes) }
+func (h *scoredHeap) Less(i, j int) bool { return h.nodes[i].score < h.nodes[j].score }
+func (h *scoredHeap) Swap(i, j int)      { h.nodes[i], h.nodes[j] = h.nodes[j], h.nodes[i] }
+
+func (h *scoredHeap) Push(x any) {
+	h.nodes = append(h.nodes, x.(scoredNode))
+}
+
+func (h *scoredHeap) Pop() any {
+	old := h.nodes
+	n := len(old)
+	x := old[n-1]
+	h.nodes = old[:n-1]
+	return x
+}
+
+func (h *scoredHeap) push(sn scoredNode) {
+	if h.max > 0 && len(h.nodes) < h.max {
+		heap.Push(h, sn)
+		return
+	}
+	if h.max > 0 && sn.score > h.nodes[0].score {
+		h.nodes[0] = sn
+		heap.Fix(h, 0)
+	}
+}
+
+func (h *scoredHeap) sorted() []scoredNode {
+	result := make([]scoredNode, 0, len(h.nodes))
+	for len(h.nodes) > 0 {
+		result = append(result, heap.Pop(h).(scoredNode))
+	}
+	return result
+}
+
+var requestSeq atomic.Uint64
 
 var filteredPool = sync.Pool{
 	New: func() any {
@@ -53,6 +88,7 @@ type TunnelManager interface {
 // ContentIndexLookup is the interface for content-aware scheduling.
 type ContentIndexLookup interface {
 	IsCached(nodeID, key string) (isHot bool, likelyCached bool)
+	FindNodesWithKey(key string) (hotNodes, bloomNodes map[string]bool)
 }
 
 func NewScheduler(nodeCache *NodeCache, signer *auth.Signer, cfg *config.ControlPlaneConfig) *Scheduler {
@@ -88,29 +124,39 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 	}
 
 	rKey := req.Resource.Key
-	scored := make([]scoredNode, 0, len(filtered))
+
+	var streamKey string
+	var hotNodes, bloomNodes map[string]bool
+	var streamNodes map[string]bool
+
+	if s.contentIndex != nil && rKey != "" {
+		hotNodes, bloomNodes = s.contentIndex.FindNodesWithKey(rKey)
+	}
+	if s.streamStrat != nil && rKey != "" {
+		streamKey, _, _ = streaming.InferStreamFromChunkKey(rKey)
+		if streamKey != "" {
+			streamNodes = s.streamStrat.FindNodesWithStream(streamKey)
+		}
+	}
+
+	maxCandidates := s.cfg.MaxCandidates
+	h := &scoredHeap{max: maxCandidates}
 	for _, n := range filtered {
-		sn := scoredNode{node: n, score: s.scoreKey(n, req.Client, rKey)}
+		sn := scoredNode{node: n, score: s.scoreKeyFast(n, req.Client, rKey, hotNodes, bloomNodes, streamNodes)}
 		if n.Capabilities.InboundReachable && len(n.Endpoints) > 0 {
 			sn.endpoint = n.Endpoints[0].URL()
 		}
-		scored = append(scored, sn)
+		h.push(sn)
 	}
 
-	sort.Sort(scoredNodes(scored))
-
-	maxCandidates := s.cfg.MaxCandidates
-	if len(scored) > maxCandidates {
-		scored = scored[:maxCandidates]
-	}
-
+	scored := h.sorted()
 	candidates := make([]models.Candidate, 0, len(scored))
-	for _, sn := range scored {
+	for i := len(scored) - 1; i >= 0; i-- {
+		sn := scored[i]
 		proxyMode := "direct"
 		if sn.node.Capabilities.TunnelRequired {
 			proxyMode = "tunnel"
 		}
-
 		candidates = append(candidates, models.Candidate{
 			ID:       sn.node.NodeID,
 			Endpoint: sn.endpoint,
@@ -138,7 +184,7 @@ func (s *Scheduler) Resolve(ctx context.Context, req models.DispatchRequest) (*m
 	}
 
 	return &models.DispatchResponse{
-		RequestID: uuid.New().String(),
+		RequestID: fmt.Sprintf("%x-%x", time.Now().UnixNano(), requestSeq.Add(1)),
 		TTLMs:     s.cfg.DefaultTTLMs,
 		Token: models.DispatchToken{
 			Type:  "hmac",
@@ -154,6 +200,10 @@ func (s *Scheduler) score(node *models.Node, client models.ClientInfo) float64 {
 }
 
 func (s *Scheduler) scoreKey(node *models.Node, client models.ClientInfo, resourceKey string) float64 {
+	return s.scoreKeyFast(node, client, resourceKey, nil, nil, nil)
+}
+
+func (s *Scheduler) scoreKeyFast(node *models.Node, client models.ClientInfo, resourceKey string, hotNodes, bloomNodes, streamNodes map[string]bool) float64 {
 	score := 0.0
 
 	if node.Region == client.Region && client.Region != "" {
@@ -171,17 +221,29 @@ func (s *Scheduler) scoreKey(node *models.Node, client models.ClientInfo, resour
 		score -= 15.0
 	}
 
-	if s.contentIndex != nil && resourceKey != "" {
-		isHot, likelyCached := s.contentIndex.IsCached(node.NodeID, resourceKey)
-		if isHot {
-			score += s.cfg.ContentIndex.HotContentAwareWeight
-		} else if likelyCached {
-			score += s.cfg.ContentIndex.ContentAwareWeight
+	if resourceKey != "" {
+		if hotNodes != nil || bloomNodes != nil {
+			if hotNodes[node.NodeID] {
+				score += s.cfg.ContentIndex.HotContentAwareWeight
+			} else if bloomNodes[node.NodeID] {
+				score += s.cfg.ContentIndex.ContentAwareWeight
+			}
+		} else if s.contentIndex != nil {
+			isHot, likelyCached := s.contentIndex.IsCached(node.NodeID, resourceKey)
+			if isHot {
+				score += s.cfg.ContentIndex.HotContentAwareWeight
+			} else if likelyCached {
+				score += s.cfg.ContentIndex.ContentAwareWeight
+			}
 		}
-	}
 
-	if s.streamStrat != nil && resourceKey != "" {
-		score += s.streamStrat.StreamScore(node.NodeID, resourceKey)
+		if streamNodes != nil {
+			if streamNodes[node.NodeID] {
+				score += 20.0
+			}
+		} else if s.streamStrat != nil {
+			score += s.streamStrat.StreamScore(node.NodeID, resourceKey)
+		}
 	}
 
 	if score < 0 {
@@ -223,6 +285,9 @@ func (s *Scheduler) filter(ctx context.Context, nodes []*models.Node) []*models.
 }
 
 func sanitizeResourceKey(key string) string {
+	if !strings.Contains(key, "..") && !strings.Contains(key, "\\") {
+		return strings.TrimSpace(key)
+	}
 	key = strings.TrimSpace(key)
 	key = strings.ReplaceAll(key, "\\", "/")
 	for _, p := range strings.Split(key, "/") {
@@ -237,7 +302,7 @@ func sanitizeResourceKey(key string) string {
 func (s *Scheduler) NoOriginFallback(req models.DispatchRequest) *models.DispatchResponse {
 	if !s.cfg.DegradeToOrigin {
 		return &models.DispatchResponse{
-			RequestID:  uuid.New().String(),
+			RequestID:  fmt.Sprintf("%x-%x", time.Now().UnixNano(), requestSeq.Add(1)),
 			TTLMs:      s.cfg.DefaultTTLMs,
 			Candidates: nil,
 		}
@@ -249,7 +314,7 @@ func (s *Scheduler) NoOriginFallback(req models.DispatchRequest) *models.Dispatc
 	}
 
 	return &models.DispatchResponse{
-		RequestID: uuid.New().String(),
+		RequestID: fmt.Sprintf("%x-%x", time.Now().UnixNano(), requestSeq.Add(1)),
 		TTLMs:     s.cfg.DefaultTTLMs,
 		Candidates: []models.Candidate{
 			{

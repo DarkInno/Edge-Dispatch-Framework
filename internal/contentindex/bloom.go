@@ -193,24 +193,42 @@ func (ci *ContentIndex) IsCached(nodeID, key string) (bool, bool) {
 	return false, false
 }
 
-// FindNodesWithKey returns node IDs that have the given key in hot keys or bloom filters.
-func (ci *ContentIndex) FindNodesWithKey(key string) (hotNodes []string, bloomNodes []string) {
+// FindNodesWithKey returns two maps of node IDs that have the key in
+// hot set or bloom filter respectively. Called once per dispatch
+// instead of N times (once per node).
+func (ci *ContentIndex) FindNodesWithKey(key string) (hotNodes, bloomNodes map[string]bool) {
 	ci.mu.RLock()
 	defer ci.mu.RUnlock()
 
+	hot := make(map[string]bool)
+	bloom := make(map[string]bool)
+
 	for nodeID, hotKeys := range ci.hotKeys {
 		if _, found := hotKeys[key]; found {
-			hotNodes = append(hotNodes, nodeID)
+			hot[nodeID] = true
 		}
 	}
-
 	for nodeID, bf := range ci.blooms {
+		if hot[nodeID] {
+			continue
+		}
 		if bf.ContainsString(key) {
-			bloomNodes = append(bloomNodes, nodeID)
+			bloom[nodeID] = true
 		}
 	}
+	return hot, bloom
+}
 
-	return hotNodes, bloomNodes
+// FindNodesWithKeySlice is a convenience wrapper that returns []string.
+func (ci *ContentIndex) FindNodesWithKeySlice(key string) (hotNodes, bloomNodes []string) {
+	hot, bloom := ci.FindNodesWithKey(key)
+	for id := range hot {
+		hotNodes = append(hotNodes, id)
+	}
+	for id := range bloom {
+		bloomNodes = append(bloomNodes, id)
+	}
+	return
 }
 
 // RemoveNode removes all index data for a node.

@@ -24,6 +24,36 @@ func (m *mockContentIndex) IsCached(nodeID, key string) (bool, bool) {
 	return false, false
 }
 
+func (m *mockContentIndex) FindNodesWithKey(key string) (hotNodes, bloomNodes map[string]bool) {
+	if m == nil {
+		return nil, nil
+	}
+	hot := make(map[string]bool)
+	bloom := make(map[string]bool)
+	for k, v := range m.data {
+		nodeID := k[:len(k)-len(key)-1]
+		if k[len(k)-len(key)-1:] == ":"+key {
+			continue
+		}
+		if _, ok := m.data[nodeID+":"+key]; ok {
+			continue
+		}
+		_ = v
+	}
+	for k, v := range m.data {
+		nodeID := k[:len(k)-len(key)-1]
+		if k != nodeID+":"+key {
+			continue
+		}
+		if v.isHot {
+			hot[nodeID] = true
+		} else if v.likelyCached {
+			bloom[nodeID] = true
+		}
+	}
+	return hot, bloom
+}
+
 func TestContentAwareScoring(t *testing.T) {
 	cfg := &config.ControlPlaneConfig{
 		ContentIndex: config.ContentIndexConfig{

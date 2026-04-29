@@ -218,7 +218,7 @@ func (s *Store) GetHotKeys(ctx context.Context, nodeID string) ([]string, error)
 // FindNodesWithKey returns node IDs that likely have the given content key.
 func (s *Store) FindNodesWithKey(ctx context.Context, key string) ([]string, error) {
 	// Check in-memory index first (map lookups, no DB round-trip)
-	hotNodes, bloomNodes := s.index.FindNodesWithKey(key)
+	hotNodes, bloomNodes := s.index.FindNodesWithKeySlice(key)
 	nodes := hotNodes
 	if len(nodes) > 0 {
 		return nodes, nil

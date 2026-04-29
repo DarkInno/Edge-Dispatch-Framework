@@ -210,14 +210,11 @@ func newAPIMetrics() *apiMetrics {
 }
 
 func (a *API) writeJSON(w http.ResponseWriter, status int, v any) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		slog.Error("write json", "error", err)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write(b)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("write json", "error", err)
+	}
 }
 
 func (a *API) writeError(w http.ResponseWriter, status int, code, message string) {

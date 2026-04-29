@@ -180,7 +180,6 @@ func IsHLSChunk(key string) bool {
 
 func IsDASHChunk(key string) bool {
 	return strings.HasSuffix(strings.ToLower(key), ".m4s") ||
-		strings.HasSuffix(strings.ToLower(key), ".mp4") ||
 		strings.HasSuffix(strings.ToLower(key), ".cmfv")
 }
 

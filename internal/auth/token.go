@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"hash"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -21,17 +20,16 @@ type TokenPayload struct {
 
 // Signer creates and verifies HMAC-signed tokens.
 type Signer struct {
-	secret  []byte
-	hmacPool sync.Pool
+	secret []byte
 }
 
 // NewSigner creates a new Signer with the given secret.
 func NewSigner(secret string) *Signer {
-	s := &Signer{secret: []byte(secret)}
-	s.hmacPool.New = func() any {
-		return hmac.New(sha256.New, s.secret)
-	}
-	return s
+	return &Signer{secret: []byte(secret)}
+}
+
+func (s *Signer) newHMAC() hash.Hash {
+	return hmac.New(sha256.New, s.secret)
 }
 
 // Sign creates a signed token for the given payload.
@@ -46,9 +44,7 @@ func (s *Signer) Sign(p TokenPayload) (string, error) {
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(payloadBytes)
 
-	mac := s.hmacPool.Get().(hash.Hash)
-	defer s.hmacPool.Put(mac)
-	mac.Reset()
+	mac := s.newHMAC()
 	mac.Write([]byte(encoded))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
@@ -63,9 +59,7 @@ func (s *Signer) Verify(token string) (*TokenPayload, error) {
 	}
 	encoded, sig := parts[0], parts[1]
 
-	mac := s.hmacPool.Get().(hash.Hash)
-	defer s.hmacPool.Put(mac)
-	mac.Reset()
+	mac := s.newHMAC()
 	mac.Write([]byte(encoded))
 	expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 

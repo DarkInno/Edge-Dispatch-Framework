@@ -184,7 +184,19 @@ func (c *ControlPlaneClient) GetBestNode(resourceKey string, clientIP string) (s
 		return "", fmt.Errorf("no candidates available")
 	}
 
-	return dispatchResp.Candidates[0].ID, nil
+	candidate := dispatchResp.Candidates[0]
+
+	// Pre-populate cache if the candidate includes an endpoint (e.g., origin fallback).
+	// This avoids a subsequent GetNodeEndpoint call that would fail for synthetic node IDs.
+	if candidate.Endpoint != "" {
+		c.cache.Store(candidate.ID, nodeInfoCache{
+			endpoint: candidate.Endpoint,
+			isPublic: true,
+			expireAt: time.Now().Add(30 * time.Second),
+		})
+	}
+
+	return candidate.ID, nil
 }
 
 // InvalidateCache removes a node from the cache.

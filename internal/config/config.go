@@ -147,7 +147,7 @@ func LoadControlPlane() *ControlPlaneConfig {
 		MaxCandidates:   intEnv("CP_MAX_CANDIDATES", 5),
 		DefaultTTLMs:    int64(intEnv("CP_DEFAULT_TTL_MS", 30000)),
 		DegradeToOrigin: boolEnv("CP_DEGRADE_TO_ORIGIN", true),
-		NodeCacheTTL:    durationEnv("CP_NODE_CACHE_TTL", 5*time.Second),
+		NodeCacheTTL:    durationEnv("CP_NODE_CACHE_TTL", 30*time.Second),
 		TLSCertFile:     getEnv("CP_TLS_CERT_FILE", ""),
 		TLSKeyFile:      getEnv("CP_TLS_KEY_FILE", ""),
 		OriginURL:       getEnv("CP_ORIGIN_URL", "http://localhost:7070"),
