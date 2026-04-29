@@ -60,19 +60,12 @@ type adminAuth struct {
 
 func newAdminAuth(cfg *config.ControlPlaneConfig) (*adminAuth, error) {
 	a := &adminAuth{
-		keyID:        cfg.AdminHMACKeyID,
-		secret:       []byte(cfg.AdminHMACSecret),
+		keyID:        cfg.Admin.AdminAccessKey,
+		secret:       []byte(cfg.Admin.AdminSecretKey),
 		nonceTTL:     10 * time.Minute,
 		maxSkew:      5 * time.Minute,
 		seenNonces:   make(map[string]time.Time),
 		cleanupEvery: 1 * time.Minute,
-	}
-	for _, cidr := range cfg.AdminAllowedCIDRs {
-		_, ipnet, err := net.ParseCIDR(strings.TrimSpace(cidr))
-		if err != nil {
-			return nil, err
-		}
-		a.allowedNets = append(a.allowedNets, ipnet)
 	}
 	return a, nil
 }

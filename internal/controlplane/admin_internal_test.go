@@ -33,9 +33,9 @@ func newSignedAdminRequest(t *testing.T, cfg *config.ControlPlaneConfig, method,
 	t.Helper()
 	req := httptest.NewRequest(method, "http://example.com"+path, bytes.NewReader(body))
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	sig := signAdmin(cfg.AdminHMACSecret, ts, nonce, method, path, body)
+	sig := signAdmin(cfg.Admin.AdminSecretKey, ts, nonce, method, path, body)
 
-	req.Header.Set("X-Admin-KeyId", cfg.AdminHMACKeyID)
+	req.Header.Set("X-Admin-KeyId", cfg.Admin.AdminAccessKey)
 	req.Header.Set("X-Admin-Timestamp", ts)
 	req.Header.Set("X-Admin-Nonce", nonce)
 	req.Header.Set("X-Admin-Signature", sig)
@@ -47,8 +47,10 @@ func newSignedAdminRequest(t *testing.T, cfg *config.ControlPlaneConfig, method,
 
 func TestAdminAuthMissingHeaders(t *testing.T) {
 	cfg := &config.ControlPlaneConfig{
-		AdminHMACKeyID:  "k1",
-		AdminHMACSecret: "s1",
+		Admin: config.AdminAPIConfig{
+			AdminAccessKey: "k1",
+			AdminSecretKey: "s1",
+		},
 	}
 	a, err := newAdminAuth(cfg)
 	if err != nil {
@@ -69,8 +71,10 @@ func TestAdminAuthMissingHeaders(t *testing.T) {
 
 func TestAdminAuthOK(t *testing.T) {
 	cfg := &config.ControlPlaneConfig{
-		AdminHMACKeyID:  "k1",
-		AdminHMACSecret: "s1",
+		Admin: config.AdminAPIConfig{
+			AdminAccessKey: "k1",
+			AdminSecretKey: "s1",
+		},
 	}
 	a, err := newAdminAuth(cfg)
 	if err != nil {
@@ -95,8 +99,10 @@ func TestAdminAuthOK(t *testing.T) {
 
 func TestAdminAuthReplayNonce(t *testing.T) {
 	cfg := &config.ControlPlaneConfig{
-		AdminHMACKeyID:  "k1",
-		AdminHMACSecret: "s1",
+		Admin: config.AdminAPIConfig{
+			AdminAccessKey: "k1",
+			AdminSecretKey: "s1",
+		},
 	}
 	a, err := newAdminAuth(cfg)
 	if err != nil {

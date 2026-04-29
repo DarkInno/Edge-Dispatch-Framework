@@ -198,9 +198,11 @@ func (s *Scheduler) filter(ctx context.Context, nodes []*models.Node) []*models.
 	filtered := (*filteredPtr)[:0]
 
 	for _, n := range nodes {
-		if n.Status == models.NodeStatusDisabled {
+		// Skip disabled and maintenance nodes
+		if n.Status == models.NodeStatusDisabled || n.Status == models.NodeStatusMaintenance {
 			continue
 		}
+
 		isPublic := n.Capabilities.InboundReachable
 		isNAT := n.Capabilities.TunnelRequired
 

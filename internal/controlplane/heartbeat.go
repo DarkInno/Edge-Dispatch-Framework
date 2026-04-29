@@ -106,6 +106,11 @@ func (h *Heartbeat) processOne(ctx context.Context, req models.HeartbeatRequest)
 		return fmt.Errorf("get node: %w", err)
 	}
 
+	// Don't re-activate disabled or maintenance nodes
+	if node.Status == models.NodeStatusDisabled || node.Status == models.NodeStatusMaintenance {
+		return nil
+	}
+
 	if node.Status == models.NodeStatusRegistered {
 		if err := h.pg.UpdateNodeStatus(ctx, req.NodeID, models.NodeStatusActive); err != nil {
 			return fmt.Errorf("activate node: %w", err)
@@ -136,6 +141,12 @@ func (h *Heartbeat) emit(eventType string, nodeID string, message string) {
 }
 
 func (h *Heartbeat) ProcessHeartbeat(ctx context.Context, req models.HeartbeatRequest) error {
+	// Reject heartbeats from revoked nodes immediately
+	if h.redis.IsNodeRevoked(ctx, req.NodeID) {
+		slog.Warn("heartbeat rejected: node is revoked", "node_id", req.NodeID)
+		return fmt.Errorf("node %s has been revoked", req.NodeID)
+	}
+
 	bh := batchHeartbeat{
 		ctx: ctx,
 		req: req,

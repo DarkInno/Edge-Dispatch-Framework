@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -76,6 +77,19 @@ func main() {
 	// Create API handler (returns http.Handler)
 	handler := controlplane.NewAPI(registry, heartbeat, scheduler, cfg)
 
+	// Initialize Admin API (v0.5)
+	var adminHandler http.Handler
+	if cfg.Admin.Enabled {
+		adminHandler, err = controlplane.NewAdminAPI(pgStore, redisStore, registry, &cfg.Admin)
+		if err != nil {
+			logger.Error("failed to create admin API", "error", err)
+			os.Exit(1)
+		}
+		if adminHandler != nil {
+			logger.Info("admin API enabled", "jwt_expiry_seconds", cfg.Admin.JWTExpirySeconds)
+		}
+	}
+
 	// Start background tasks
 	ctxBg, cancelBg := context.WithCancel(context.Background())
 	defer cancelBg()
@@ -83,9 +97,18 @@ func main() {
 	prober.Start(ctxBg)
 
 	// Start HTTP server
+	combinedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/internal/admin/v1") && adminHandler != nil {
+			adminHandler.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           handler,
+		Handler:           combinedHandler,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,

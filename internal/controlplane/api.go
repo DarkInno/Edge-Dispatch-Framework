@@ -176,7 +176,7 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 		r.Post("/v1/dispatch/resolve", api.handleDispatch)
 		r.Get("/obj/*", api.handleObjectIngress)
 	})
-	if cfg.EnableAdminInternalAPI {
+	if cfg.Admin.Enabled {
 		admin, err := newAdminAuth(cfg)
 		if err != nil {
 			panic(err)

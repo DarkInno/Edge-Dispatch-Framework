@@ -31,47 +31,45 @@ type GatewayConfig struct {
 
 // ControlPlaneConfig holds control plane specific configuration.
 type ControlPlaneConfig struct {
-	ListenAddr             string
-	PGURL                  string
-	RedisAddr              string
-	RedisPassword          string
-	ProbeInterval          time.Duration
-	ProbeTimeout           time.Duration
-	HeartbeatTTL           time.Duration
-	TokenSecret            string
-	MaxCandidates          int
-	DefaultTTLMs           int64
-	DegradeToOrigin        bool
-	NodeCacheTTL           time.Duration
-	TLSCertFile            string
-	TLSKeyFile             string
-	ContentIndex           ContentIndexConfig
-	OriginURL              string
-	Streaming              *StreamingConfig
-	EnableAdminInternalAPI bool
-	AdminHMACKeyID         string
-	AdminHMACSecret        string
-	AdminAllowedCIDRs      []string
+	ListenAddr      string
+	PGURL           string
+	RedisAddr       string
+	RedisPassword   string
+	ProbeInterval   time.Duration
+	ProbeTimeout    time.Duration
+	HeartbeatTTL    time.Duration
+	TokenSecret     string
+	MaxCandidates   int
+	DefaultTTLMs    int64
+	DegradeToOrigin bool
+	NodeCacheTTL    time.Duration
+	TLSCertFile     string
+	TLSKeyFile      string
+	ContentIndex    ContentIndexConfig
+	OriginURL       string
+	Streaming       *StreamingConfig
+	// Admin API configuration (v0.5)
+	Admin AdminAPIConfig
 }
 
 // EdgeAgentConfig holds edge agent specific configuration.
 type EdgeAgentConfig struct {
-	ListenAddr        string
-	ControlPlaneURL   string
-	NodeToken         string
-	CacheDir          string
-	CacheMaxGB        int64
-	OriginURL         string
+	ListenAddr       string
+	ControlPlaneURL  string
+	NodeToken        string
+	CacheDir         string
+	CacheMaxGB       int64
+	OriginURL        string
 	HeartbeatInterval time.Duration
-	MaxConns          int
-	TLSCertFile       string
-	TLSKeyFile        string
+	MaxConns         int
+	TLSCertFile      string
+	TLSKeyFile       string
 	// NAT/Tunnel support (v0.3)
 	NATMode          bool   // true if this node is behind NAT
 	TunnelServerAddr string // Tunnel server address (e.g., "gateway:7700")
 	TunnelAuthToken  string // Token for tunnel authentication
 	// Streaming support (v0.4)
-	Streaming *StreamingConfig
+	Streaming        *StreamingConfig
 }
 
 // OriginConfig holds origin server configuration.
@@ -95,10 +93,10 @@ type DNSAdapterConfig struct {
 
 // ContentIndexConfig holds content index configuration (v0.2+).
 type ContentIndexConfig struct {
-	BloomCapacity         int
-	BloomFPRate           float64
-	HotKeyTTL             time.Duration
-	ContentAwareWeight    float64
+	BloomCapacity       int
+	BloomFPRate         float64
+	HotKeyTTL           time.Duration
+	ContentAwareWeight  float64
 	HotContentAwareWeight float64
 }
 
@@ -148,14 +146,27 @@ func LoadControlPlane() *ControlPlaneConfig {
 			BloomCapacity:         intEnv("CP_CI_BLOOM_CAPACITY", 10000),
 			BloomFPRate:           floatEnv("CP_CI_BLOOM_FP_RATE", 0.01),
 			HotKeyTTL:             durationEnv("CP_CI_HOT_KEY_TTL", 5*time.Minute),
-			ContentAwareWeight:    floatEnv("CP_CI_CONTENT_AWARE_WEIGHT", 10.0),
-			HotContentAwareWeight: floatEnv("CP_CI_HOT_CONTENT_WEIGHT", 25.0),
+			ContentAwareWeight:     floatEnv("CP_CI_CONTENT_AWARE_WEIGHT", 10.0),
+			HotContentAwareWeight:  floatEnv("CP_CI_HOT_CONTENT_WEIGHT", 25.0),
 		},
-		Streaming:              DefaultStreamingConfig(),
-		EnableAdminInternalAPI: boolEnv("CP_ENABLE_ADMIN_INTERNAL_API", false),
-		AdminHMACKeyID:         getEnv("CP_ADMIN_HMAC_KEY_ID", ""),
-		AdminHMACSecret:        getEnv("CP_ADMIN_HMAC_SECRET", ""),
-		AdminAllowedCIDRs:      stringSliceEnv("CP_ADMIN_ALLOWED_CIDRS"),
+		Streaming: DefaultStreamingConfig(),
+		Admin: AdminAPIConfig{
+			Enabled:           boolEnv("CP_ADMIN_ENABLED", false),
+			AdminSecretKey:    getEnv("CP_ADMIN_SECRET_KEY", ""),
+			AdminAccessKey:    getEnv("CP_ADMIN_ACCESS_KEY", ""),
+			JWTSecret:         getEnv("CP_ADMIN_JWT_SECRET", ""),
+			JWTExpirySeconds:  intEnv("CP_ADMIN_JWT_EXPIRY", 3600),
+			SessionStoreType:  getEnv("CP_ADMIN_SESSION_STORE", "memory"),
+			EnableMultiTenancy: boolEnv("CP_ENABLE_MULTITENANCY", false),
+			EnableOIDC:        boolEnv("CP_ADMIN_OIDC_ENABLED", false),
+			OIDCProviderURL:   getEnv("CP_ADMIN_OIDC_PROVIDER_URL", ""),
+			OIDCClientID:      getEnv("CP_ADMIN_OIDC_CLIENT_ID", ""),
+			OIDCClientSecret:  getEnv("CP_ADMIN_OIDC_CLIENT_SECRET", ""),
+			EnableLocalAuth:   boolEnv("CP_ADMIN_LOCAL_AUTH", true),
+			GrafanaURL:        getEnv("CP_ADMIN_GRAFANA_URL", ""),
+			PrometheusURL:     getEnv("CP_ADMIN_PROMETHEUS_URL", ""),
+			LokiURL:           getEnv("CP_ADMIN_LOKI_URL", ""),
+		},
 	}
 	cfg.warnDefaults()
 	return cfg
@@ -211,28 +222,30 @@ func LoadOrigin() *OriginConfig {
 	}
 }
 
+// AdminAPIConfig holds admin API configuration (v0.5).
+type AdminAPIConfig struct {
+	Enabled           bool
+	AdminSecretKey    string
+	AdminAccessKey    string
+	JWTSecret         string
+	JWTExpirySeconds  int
+	SessionStoreType  string // "memory" or "redis"
+	EnableMultiTenancy bool
+	EnableOIDC        bool
+	OIDCProviderURL   string
+	OIDCClientID      string
+	OIDCClientSecret  string
+	EnableLocalAuth   bool
+	GrafanaURL        string
+	PrometheusURL     string
+	LokiURL           string
+}
+
 func getEnv(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return defaultVal
-}
-
-func stringSliceEnv(key string) []string {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return nil
-	}
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	return out
 }
 
 func intEnv(key string, defaultVal int) int {
@@ -277,15 +290,11 @@ func (c *ControlPlaneConfig) warnDefaults() {
 		fmt.Fprintln(os.Stderr, "FATAL: CP_TOKEN_SECRET must be set to a strong random secret. Refusing to start with default value.")
 		os.Exit(1)
 	}
-	if c.EnableAdminInternalAPI {
-		if c.AdminHMACKeyID == "" || c.AdminHMACSecret == "" {
-			slog.Error("FATAL: internal admin API enabled but missing HMAC configuration. Set CP_ADMIN_HMAC_KEY_ID and CP_ADMIN_HMAC_SECRET.", "enabled", true)
-			fmt.Fprintln(os.Stderr, "FATAL: CP_ENABLE_ADMIN_INTERNAL_API requires CP_ADMIN_HMAC_KEY_ID and CP_ADMIN_HMAC_SECRET to be set.")
-			os.Exit(1)
-		}
-	}
 	if strings.Contains(c.PGURL, "sslmode=disable") {
 		slog.Warn("WARNING: PostgreSQL connection has SSL disabled (sslmode=disable). Enable TLS in production.")
+	}
+	if c.Admin.Enabled && c.Admin.JWTSecret == "" {
+		slog.Warn("WARNING: Admin API enabled but no JWT secret configured. JWT auth will be insecure.")
 	}
 }
 
@@ -325,10 +334,10 @@ func LoadDNSAdapter() *DNSAdapterConfig {
 // LoadContentIndex loads configuration for the content index (v0.2+).
 func LoadContentIndex() *ContentIndexConfig {
 	return &ContentIndexConfig{
-		BloomCapacity:         intEnv("CI_BLOOM_CAPACITY", 10000),
-		BloomFPRate:           floatEnv("CI_BLOOM_FP_RATE", 0.01),
-		HotKeyTTL:             durationEnv("CI_HOT_KEY_TTL", 5*time.Minute),
-		ContentAwareWeight:    floatEnv("CI_CONTENT_AWARE_WEIGHT", 10.0),
+		BloomCapacity:       intEnv("CI_BLOOM_CAPACITY", 10000),
+		BloomFPRate:         floatEnv("CI_BLOOM_FP_RATE", 0.01),
+		HotKeyTTL:           durationEnv("CI_HOT_KEY_TTL", 5*time.Minute),
+		ContentAwareWeight:  floatEnv("CI_CONTENT_AWARE_WEIGHT", 10.0),
 		HotContentAwareWeight: floatEnv("CI_HOT_CONTENT_WEIGHT", 25.0),
 	}
 }
