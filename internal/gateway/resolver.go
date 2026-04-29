@@ -13,6 +13,7 @@ import (
 // ControlPlaneClient interfaces with the control plane API.
 type ControlPlaneClient struct {
 	baseURL    string
+	authToken  string
 	httpClient *http.Client
 	logger     *slog.Logger
 	cache      sync.Map // nodeID -> cachedNodeInfo
@@ -75,12 +76,13 @@ type CandidateInfo struct {
 }
 
 // NewControlPlaneClient creates a new control plane client.
-func NewControlPlaneClient(baseURL string, logger *slog.Logger) *ControlPlaneClient {
+func NewControlPlaneClient(baseURL, authToken string, logger *slog.Logger) *ControlPlaneClient {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &ControlPlaneClient{
-		baseURL: baseURL,
+		baseURL:   baseURL,
+		authToken: authToken,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -100,7 +102,14 @@ func (c *ControlPlaneClient) GetNodeEndpoint(nodeID string) (string, bool, error
 
 	// Fetch from control plane
 	url := fmt.Sprintf("%s/v1/nodes/%s", c.baseURL, nodeID)
-	resp, err := c.httpClient.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("create request: %w", err)
+	}
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", false, fmt.Errorf("fetch node: %w", err)
 	}
@@ -152,6 +161,9 @@ func (c *ControlPlaneClient) GetBestNode(resourceKey string, clientIP string) (s
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.authToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

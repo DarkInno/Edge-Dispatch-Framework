@@ -23,6 +23,7 @@ type GatewayConfig struct {
 	TunnelAddr      string
 	ControlPlaneURL string
 	AuthToken       string
+	CPToken         string
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	IdleTimeout     time.Duration
@@ -183,6 +184,7 @@ func LoadGateway() *GatewayConfig {
 		TunnelAddr:      getEnv("GW_TUNNEL_ADDR", ":7700"),
 		ControlPlaneURL: getEnv("GW_CONTROL_PLANE_URL", "http://localhost:8080"),
 		AuthToken:       getEnv("GW_AUTH_TOKEN", "change-me-in-production"),
+		CPToken:         getEnv("GW_CP_TOKEN", "change-me-in-production"),
 		ReadTimeout:     durationEnv("GW_READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:    durationEnv("GW_WRITE_TIMEOUT", 60*time.Second),
 		IdleTimeout:     durationEnv("GW_IDLE_TIMEOUT", 120*time.Second),

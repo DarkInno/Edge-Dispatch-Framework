@@ -65,6 +65,7 @@ services:
       GW_TUNNEL_ADDR: ":7700"
       GW_CONTROL_PLANE_URL: "http://control-plane:8080"
       GW_AUTH_TOKEN: "demo-tunnel-token-change-in-production"
+      GW_CP_TOKEN: "demo-secret-change-in-production"
     depends_on:
       - control-plane
 

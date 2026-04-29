@@ -25,7 +25,7 @@ func main() {
 	cfg := config.LoadGateway()
 
 	// Create control plane client for node resolution
-	resolver := gateway.NewControlPlaneClient(cfg.ControlPlaneURL, logger)
+	resolver := gateway.NewControlPlaneClient(cfg.ControlPlaneURL, cfg.CPToken, logger)
 
 	// Create and start gateway
 	gw := gateway.New(
