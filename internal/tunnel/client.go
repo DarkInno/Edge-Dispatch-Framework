@@ -39,7 +39,7 @@ type Client struct {
 	logger   *slog.Logger
 	conn     net.Conn
 	tunnelID string
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
