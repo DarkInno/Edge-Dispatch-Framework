@@ -12,11 +12,11 @@
 
 | 场景 | 说明 | 状态 |
 |------|------|------|
-| **下载/点播加速** | HTTP 对象分发、Range 断点续传、边缘缓存、回源 | ✅ v0.1 |
-| **多入口调度** | 302 重定向、DNS/GSLB、网关反代 | ✅ v0.1~v0.3 |
-| **NAT 节点穿透** | 反向隧道，让内网节点也能提供服务 | ✅ v0.3 |
-| **内容感知调度** | Bloom Filter + 热内容精确索引，命中率优先 | ✅ v0.2 |
-| **直播分片分发** | HLS/DASH 滑动窗口缓存 + 预取 | ✅ v0.4 |
+| **下载/点播加速** | HTTP 对象分发、Range 断点续传、边缘缓存、回源 | ✅ |
+| **多入口调度** | 302 重定向、DNS/GSLB、网关反代 | ✅ |
+| **NAT 节点穿透** | 反向隧道，让内网节点也能提供服务 | ✅ |
+| **内容感知调度** | Bloom Filter + 热内容精确索引，命中率优先 | ✅ |
+| **直播分片分发** | HLS/DASH 滑动窗口缓存 + 预取 | ✅ |
 | **HTTP/3 / QUIC** | 基于 UDP 的下一代传输 | 🔜 Roadmap |
 
 ## 架构概览
@@ -269,7 +269,7 @@ docker compose -f docker-compose.edge.yml logs -f
 curl http://localhost:9090/healthz
 ```
 
-**NAT 节点（v0.3）** — 节点在 NAT 后无公网 IP 时使用隧道模式：
+**NAT 节点** — 节点在 NAT 后无公网 IP 时使用隧道模式：
 
 在 `.env` 中添加：
 ```bash
@@ -442,7 +442,7 @@ docker push your-registry/edf-edge-agent:latest
 | `EA_NAT_MODE` | `false` | NAT 模式（通过隧道连接） |
 | `EA_TUNNEL_SERVER_ADDR` | — | 隧道服务器地址 |
 
-### 网关（Gateway, v0.3）
+### 网关（Gateway）
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -451,7 +451,7 @@ docker push your-registry/edf-edge-agent:latest
 | `GW_CONTROL_PLANE_URL` | — | 控制面地址 |
 | `GW_AUTH_TOKEN` | — | 隧道认证 Token（**生产必须设置**） |
 
-### DNS 适配器（v0.2）
+### DNS 适配器
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -529,7 +529,6 @@ make stress-gateway
 
 | 文档 | 说明 |
 |------|------|
-| [需求文档（PRD）](requirements.md) | 产品需求、功能范围、里程碑 |
 | [更新日志](CHANGELOG.md) | 按版本记录的新增、修复、变更 |
 | [贡献指南](CONTRIBUTING.md) | 开发流程、代码规范、提交规范 |
 
