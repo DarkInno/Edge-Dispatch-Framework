@@ -66,8 +66,8 @@ func main() {
 	r.Use(middleware.RealIP)
 
 	// Object serving endpoint with Range support
-	r.Get("/obj/{key:.*}", func(w http.ResponseWriter, r *http.Request) {
-		key := chi.URLParam(r, "key")
+	r.Get("/obj/*", func(w http.ResponseWriter, r *http.Request) {
+		key := chi.URLParam(r, "*")
 		if key == "" || key == "." || strings.Contains(r.URL.Path, "..") {
 			http.Error(w, "invalid key", http.StatusBadRequest)
 			return
@@ -169,11 +169,13 @@ func main() {
 
 	// Start server
 	srv := &http.Server{
-		Addr:         cfg.ListenAddr,
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              cfg.ListenAddr,
+		Handler:           r,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
 	}
 
 	go func() {
