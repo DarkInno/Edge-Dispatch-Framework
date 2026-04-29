@@ -7,6 +7,9 @@ RUN CGO_ENABLED=0 go build -o /control-plane ./cmd/control-plane
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
+RUN adduser -D -g '' appuser
 COPY --from=builder /control-plane /control-plane
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://localhost:8080/healthz || exit 1
+USER appuser
 ENTRYPOINT ["/control-plane"]

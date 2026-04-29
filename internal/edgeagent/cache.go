@@ -164,7 +164,6 @@ func (c *Cache) Put(ctx context.Context, key string, data io.Reader, size int64)
 		os.Remove(cp)
 		return fmt.Errorf("write cache: %w", err)
 	}
-	_ = f.Sync()
 
 	now := time.Now().UnixNano()
 	m := cacheMetaPool.Get().(*cacheMeta)

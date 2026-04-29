@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -32,7 +33,7 @@ func main() {
 	ctx := context.Background()
 
 	// Initialize PostgreSQL store
-	logger.Info("connecting to postgres", "url", cfg.PGURL)
+	logger.Info("connecting to postgres", "host", sanitizePGURL(cfg.PGURL))
 	pgStore, err := store.NewPGStore(ctx, cfg.PGURL)
 	if err != nil {
 		logger.Error("failed to connect to postgres", "error", err)
@@ -100,7 +101,7 @@ func main() {
 	combinedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/internal/admin/v1") && adminHandler != nil {
-			adminHandler.ServeHTTP(w, r)
+			http.StripPrefix("/internal/admin/v1", adminHandler).ServeHTTP(w, r)
 			return
 		}
 		handler.ServeHTTP(w, r)
@@ -147,4 +148,12 @@ func main() {
 	}
 
 	logger.Info("control plane stopped")
+}
+
+// sanitizePGURL returns a redacted PostgreSQL URL safe for logging.
+func sanitizePGURL(raw string) string {
+	if u, err := url.Parse(raw); err == nil {
+		return u.Host
+	}
+	return raw
 }

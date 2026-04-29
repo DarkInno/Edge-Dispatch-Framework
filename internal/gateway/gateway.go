@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,18 +15,24 @@ import (
 	"time"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/metrics"
+	"github.com/darkinno/edge-dispatch-framework/internal/quic"
 	"github.com/darkinno/edge-dispatch-framework/internal/tunnel"
 )
 
 // Config holds gateway configuration.
 type Config struct {
-	ListenAddr      string        // HTTP listen address
-	TunnelAddr      string        // Tunnel server listen address
-	ControlPlaneURL string        // Control plane API URL
-	AuthToken       string        // Token for tunnel node authentication
+	ListenAddr      string // HTTP listen address
+	TunnelAddr      string // Tunnel server listen address
+	ControlPlaneURL string // Control plane API URL
+	AuthToken       string // Token for tunnel node authentication
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	IdleTimeout     time.Duration
+	// HTTP/3 QUIC support (v0.6)
+	QuicEnabled    bool
+	QuicListenAddr string
+	TLSCertFile    string
+	TLSKeyFile     string
 }
 
 // DefaultConfig returns default gateway configuration.
@@ -46,10 +53,13 @@ type Gateway struct {
 	tunnelServer *tunnel.Server
 	logger       *slog.Logger
 	server       *http.Server
+	quicServer   *quic.Server
 	resolver     NodeResolver
 	ctx          context.Context
 	cancel       context.CancelFunc
 	promMetrics  *gwMetrics
+	transport    *http.Transport
+	reverseProxy *httputil.ReverseProxy
 }
 
 type gwMetrics struct {
@@ -81,10 +91,26 @@ func New(cfg Config, resolver NodeResolver, logger *slog.Logger) *Gateway {
 		logger:   logger,
 		ctx:      ctx,
 		cancel:   cancel,
+		transport: &http.Transport{
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   20,
+			MaxConnsPerHost:       200,
+			IdleConnTimeout:       90 * time.Second,
+			DisableCompression:    false,
+		},
 		promMetrics: &gwMetrics{
 			requestsTotal: metrics.NewCounter("gateway_requests_total", "Total number of proxy requests"),
 			errorsTotal:   metrics.NewCounter("gateway_errors_total", "Total number of proxy errors"),
 			tunnelGauge:   metrics.NewGauge("gateway_active_tunnels", "Number of active tunnel connections"),
+		},
+	}
+
+	gw.reverseProxy = &httputil.ReverseProxy{
+		Director: func(req *http.Request) {},
+		Transport: gw.transport,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			gw.logger.Error("proxy error", "err", err)
+			http.Error(w, "proxy error", http.StatusBadGateway)
 		},
 	}
 
@@ -113,10 +139,11 @@ func (g *Gateway) Start() error {
 	mux.HandleFunc("/obj/", g.handleObjectRequest)
 	mux.HandleFunc("/healthz", g.handleHealth)
 	mux.HandleFunc("/metrics", g.handleMetrics)
+	handler := withRecovery(withSecurityHeaders(mux))
 
 	g.server = &http.Server{
 		Addr:         g.cfg.ListenAddr,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  g.cfg.ReadTimeout,
 		WriteTimeout: g.cfg.WriteTimeout,
 		IdleTimeout:  g.cfg.IdleTimeout,
@@ -139,12 +166,61 @@ func (g *Gateway) Start() error {
 		}
 	}()
 
+	// Start QUIC server if enabled (v0.6)
+	if g.cfg.QuicEnabled && quic.Enabled {
+		g.startQUICServer()
+	}
+
 	return nil
+}
+
+func (g *Gateway) startQUICServer() {
+	tlsCfg, err := g.loadTLSConfig()
+	if err != nil {
+		g.logger.Warn("quic: cannot start without TLS", "err", err)
+		return
+	}
+
+	addr := g.cfg.QuicListenAddr
+	if addr == "" {
+		addr = quic.DefaultListenAddr
+	}
+
+	g.quicServer = quic.NewServer(quic.ServerConfig{
+		Addr:      addr,
+		Handler:   g.server.Handler,
+		TLSConfig: tlsCfg,
+	})
+
+	go func() {
+		if err := g.quicServer.ListenAndServe(); err != nil {
+			g.logger.Error("quic server error", "err", err)
+		}
+	}()
+
+	g.logger.Info("quic: HTTP/3 server started", "addr", addr)
+}
+
+func (g *Gateway) loadTLSConfig() (*tls.Config, error) {
+	if g.cfg.TLSCertFile == "" || g.cfg.TLSKeyFile == "" {
+		return nil, fmt.Errorf("TLS cert/key files not configured")
+	}
+	cert, err := tls.LoadX509KeyPair(g.cfg.TLSCertFile, g.cfg.TLSKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load TLS cert: %w", err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 // Stop gracefully shuts down the gateway.
 func (g *Gateway) Stop() {
 	g.cancel()
+	if g.quicServer != nil {
+		g.quicServer.Close()
+	}
 	if g.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -245,9 +321,7 @@ func (g *Gateway) proxyToPublic(w http.ResponseWriter, r *http.Request, endpoint
 	key = sanitizeGatewayKey(key)
 	targetURL.Path = path.Join("/obj/", key)
 
-	// Create reverse proxy
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.Director = func(req *http.Request) {
+	g.reverseProxy.Director = func(req *http.Request) {
 		req.URL.Scheme = targetURL.Scheme
 		req.URL.Host = targetURL.Host
 		req.URL.Path = targetURL.Path
@@ -268,12 +342,7 @@ func (g *Gateway) proxyToPublic(w http.ResponseWriter, r *http.Request, endpoint
 		}
 	}
 
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		g.logger.Error("proxy error", "err", err, "endpoint", endpoint)
-		http.Error(w, "proxy error", http.StatusBadGateway)
-	}
-
-	proxy.ServeHTTP(w, r)
+	g.reverseProxy.ServeHTTP(w, r)
 }
 
 func (g *Gateway) proxyToTunnel(w http.ResponseWriter, r *http.Request, nodeID, key string) {
@@ -361,4 +430,24 @@ func extractClientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func withRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("panic recovered", "err", rec, "path", r.URL.Path)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		next.ServeHTTP(w, r)
+	})
 }

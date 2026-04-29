@@ -7,6 +7,8 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /dns-adapter ./cmd/dns-adapter
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
+RUN adduser -D -g '' appuser
 COPY --from=builder /dns-adapter /usr/local/bin/dns-adapter
 EXPOSE 5353/udp
+USER appuser
 ENTRYPOINT ["dns-adapter"]

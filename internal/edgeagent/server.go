@@ -20,6 +20,7 @@ import (
 	"github.com/darkinno/edge-dispatch-framework/internal/auth"
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
 	"github.com/darkinno/edge-dispatch-framework/internal/metrics"
+	"github.com/darkinno/edge-dispatch-framework/internal/quic"
 	"github.com/darkinno/edge-dispatch-framework/internal/streaming"
 )
 
@@ -69,6 +70,7 @@ type Server struct {
 	lastSnapshot MetricsSnapshot
 	snapshotMu   sync.Mutex
 	httpSrv      *http.Server
+	quicSrv      *quic.Server
 	listener     net.Listener
 	streamH      *streaming.Handler
 	promMetrics  *promMetrics
@@ -111,7 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/obj/", s.handleObject)
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/metrics", s.handleMetrics)
-	return withCommonHeaders(withGzipCompression(mux))
+	return withRecovery(withCommonHeaders(withGzipCompression(mux)))
 }
 
 var commonRespHeaders = map[string]string{
@@ -226,10 +228,45 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	// Start QUIC server if enabled (v0.6)
+	if s.cfg.Quic.Enabled && quic.Enabled {
+		s.startQUICServer()
+	}
+
 	return nil
 }
 
+func (s *Server) startQUICServer() {
+	tlsCfg := s.httpSrv.TLSConfig
+	if tlsCfg == nil {
+		slog.Warn("quic: cannot start without TLS config")
+		return
+	}
+
+	addr := s.cfg.Quic.ListenAddr
+	if addr == "" {
+		addr = quic.DefaultListenAddr
+	}
+
+	s.quicSrv = quic.NewServer(quic.ServerConfig{
+		Addr:      addr,
+		Handler:   s.httpSrv.Handler,
+		TLSConfig: tlsCfg,
+	})
+
+	go func() {
+		if err := s.quicSrv.ListenAndServe(); err != nil {
+			slog.Error("quic server error", "err", err)
+		}
+	}()
+
+	slog.Info("quic: HTTP/3 server started", "addr", addr)
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.quicSrv != nil {
+		s.quicSrv.Close()
+	}
 	if s.httpSrv != nil {
 		slog.Info("shutting down edge agent server")
 		return s.httpSrv.Shutdown(ctx)
@@ -305,7 +342,25 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request) {
 		}
 		defer fr.Body.Close()
 
-		if fr.ContentLength > 0 {
+		// Write to cache while serving response (only for full responses, not range)
+		if rangeHeader == "" {
+			var buf bytes.Buffer
+			tee := io.TeeReader(fr.Body, &buf)
+			s.serveFromFetchResult(w, r, &FetchResult{
+				Body:          io.NopCloser(tee),
+				ContentType:   fr.ContentType,
+				ContentLength: fr.ContentLength,
+				ETag:          fr.ETag,
+				StatusCode:    fr.StatusCode,
+			})
+			n := int64(buf.Len())
+			s.metrics.bytesSent.Add(n)
+			go func() {
+				if err := s.cache.Put(context.Background(), key, &buf, n); err != nil {
+					slog.Debug("cache put failed", "key", key, "err", err)
+				}
+			}()
+		} else if fr.ContentLength > 0 {
 			s.serveFromFetchResult(w, r, fr)
 			s.metrics.bytesSent.Add(fr.ContentLength)
 		} else {
@@ -570,4 +625,16 @@ func parseRangeHeader(rh string, contentLen int64) (int64, int64, error) {
 	}
 
 	return start, end, nil
+}
+
+func withRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("panic recovered", "err", rec, "path", r.URL.Path)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }

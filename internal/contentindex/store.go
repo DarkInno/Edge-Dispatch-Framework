@@ -217,50 +217,36 @@ func (s *Store) GetHotKeys(ctx context.Context, nodeID string) ([]string, error)
 
 // FindNodesWithKey returns node IDs that likely have the given content key.
 func (s *Store) FindNodesWithKey(ctx context.Context, key string) ([]string, error) {
-	// Check hot keys first
-	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT node_id FROM content_index
-		WHERE content_key = $1 AND is_hot = true
-	`, key)
-	if err != nil {
-		return nil, err
+	// Check in-memory index first (map lookups, no DB round-trip)
+	hotNodes, bloomNodes := s.index.FindNodesWithKey(key)
+	nodes := hotNodes
+	if len(nodes) > 0 {
+		return nodes, nil
 	}
-	defer rows.Close()
+	if len(bloomNodes) > 0 {
+		return bloomNodes, nil
+	}
 
-	var nodes []string
-	for rows.Next() {
-		var nid string
-		if err := rows.Scan(&nid); err != nil {
-			return nodes, err
-		}
-		nodes = append(nodes, nid)
-	}
-	if err := rows.Err(); err != nil {
+	// Fallback to DB scan for cold blooms not yet in memory
+	bloomRows, err := s.pool.Query(ctx, `SELECT node_id, bloom_data, bloom_k FROM content_bloom`)
+	if err != nil {
 		return nodes, err
 	}
+	defer bloomRows.Close()
 
-	// Check bloom filters if no hot match
-	if len(nodes) == 0 {
-		bloomRows, err := s.pool.Query(ctx, `SELECT node_id, bloom_data, bloom_k FROM content_bloom`)
-		if err != nil {
-			return nodes, err
+	for bloomRows.Next() {
+		var nid string
+		var data []byte
+		var k uint32
+		if err := bloomRows.Scan(&nid, &data, &k); err != nil {
+			continue
 		}
-		defer bloomRows.Close()
-
-		for bloomRows.Next() {
-			var nid string
-			var data []byte
-			var k uint32
-			if err := bloomRows.Scan(&nid, &data, &k); err != nil {
-				continue
-			}
-			if k == 0 || k > 100 {
-				continue
-			}
-			bf := NewBloomFilterFromBytes(data, k)
-			if bf.ContainsString(key) {
-				nodes = append(nodes, nid)
-			}
+		if k == 0 || k > 100 {
+			continue
+		}
+		bf := NewBloomFilterFromBytes(data, k)
+		if bf.ContainsString(key) {
+			nodes = append(nodes, nid)
 		}
 	}
 

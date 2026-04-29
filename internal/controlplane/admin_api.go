@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +63,13 @@ func NewAdminAPI(pg *store.PGStore, redis *store.RedisStore, registry *Registry,
 			slog.Warn("failed to seed default tenant", "err", err)
 		}
 		// Seed default admin user
-		hash, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+		seedPassword := "admin123"
+		if envSeed := os.Getenv("CP_ADMIN_SEED_PASSWORD"); envSeed != "" {
+			seedPassword = envSeed
+		} else {
+			slog.Warn("CP_ADMIN_SEED_PASSWORD not set, using default seed password for initial admin user")
+		}
+		hash, _ := bcrypt.GenerateFromPassword([]byte(seedPassword), bcrypt.DefaultCost)
 		adminUser := &models.User{
 			TenantID:    "default",
 			Email:       "admin@edf.local",
@@ -165,11 +172,24 @@ func NewAdminAPI(pg *store.PGStore, redis *store.RedisStore, registry *Registry,
 
 // ─── Auth Handlers ─────────────────────────────────────────────
 
+var adminLoginLimiter = newRateLimiter(5, 10)
+
 func (a *AdminAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if !adminLoginLimiter.Allow() {
+		a.writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many login attempts, try again later")
+		return
+	}
+
 	if !a.cfg.EnableLocalAuth {
 		a.writeError(w, http.StatusForbidden, "LOCAL_AUTH_DISABLED", "local authentication is disabled")
 		return
 	}
+
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -213,6 +233,11 @@ func (a *AdminAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	var body struct {
 		RefreshToken string `json:"refresh_token"`
 	}
@@ -286,6 +311,11 @@ func (a *AdminAPI) handleAdminHealthz(w http.ResponseWriter, r *http.Request) {
 // ─── Tenant Handlers ───────────────────────────────────────────
 
 func (a *AdminAPI) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	var tenant models.Tenant
 	if err := json.NewDecoder(r.Body).Decode(&tenant); err != nil {
 		a.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -327,6 +357,11 @@ func (a *AdminAPI) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	tenantID := chi.URLParam(r, "tenantID")
 	existing, err := a.pg.GetTenant(r.Context(), tenantID)
 	if err != nil {
@@ -378,6 +413,11 @@ func (a *AdminAPI) handleListUsers(w http.ResponseWriter, r *http.Request) {
 // ─── Project Handlers ──────────────────────────────────────────
 
 func (a *AdminAPI) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	tenantID := chi.URLParam(r, "tenantID")
 	var project models.Project
 	if err := json.NewDecoder(r.Body).Decode(&project); err != nil {
@@ -422,6 +462,11 @@ func (a *AdminAPI) handleGetProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	projectID := chi.URLParam(r, "projectID")
 	existing, err := a.pg.GetProject(r.Context(), projectID)
 	if err != nil {
@@ -460,6 +505,11 @@ func (a *AdminAPI) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 // ─── User Handlers ─────────────────────────────────────────────
 
 func (a *AdminAPI) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	var body struct {
 		TenantID    string              `json:"tenant_id"`
 		Email       string              `json:"email"`
@@ -506,6 +556,11 @@ func (a *AdminAPI) handleGetUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	userID := chi.URLParam(r, "userID")
 	existing, err := a.pg.GetUser(r.Context(), userID)
 	if err != nil {
@@ -588,12 +643,21 @@ func (a *AdminAPI) handleGetNode(w http.ResponseWriter, r *http.Request) {
 func (a *AdminAPI) handleDisableNode(w http.ResponseWriter, r *http.Request) {
 	nodeID := chi.URLParam(r, "nodeID")
 
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
+
 	var body struct {
 		Reason  string `json:"reason"`
 		Message string `json:"message"`
 		Until   string `json:"until"` // RFC3339 timestamp
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		a.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
 
 	var until time.Time
 	if body.Until != "" {
@@ -633,6 +697,11 @@ func (a *AdminAPI) handleRevokeNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handlePatchNode(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	nodeID := chi.URLParam(r, "nodeID")
 	var patch models.NodeAdminPatch
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
@@ -706,6 +775,11 @@ func (a *AdminAPI) handlePatchNode(w http.ResponseWriter, r *http.Request) {
 // ─── Policy Handlers ───────────────────────────────────────────
 
 func (a *AdminAPI) handleCreatePolicy(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	var policy models.AdminPolicy
 	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
 		a.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -757,6 +831,11 @@ func (a *AdminAPI) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	policyID := chi.URLParam(r, "policyID")
 	existing, err := a.pg.GetAdminPolicy(r.Context(), policyID)
 	if err != nil {
@@ -866,6 +945,11 @@ func (a *AdminAPI) handleGetPolicyVersions(w http.ResponseWriter, r *http.Reques
 // ─── Ingress Handlers ──────────────────────────────────────────
 
 func (a *AdminAPI) handleCreateIngress(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	var ingress models.Ingress
 	if err := json.NewDecoder(r.Body).Decode(&ingress); err != nil {
 		a.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -909,6 +993,11 @@ func (a *AdminAPI) handleGetIngress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handleUpdateIngress(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	ingressID := chi.URLParam(r, "ingressID")
 	existing, err := a.pg.GetIngress(r.Context(), ingressID)
 	if err != nil {
@@ -953,6 +1042,11 @@ func (a *AdminAPI) handleDeleteIngress(w http.ResponseWriter, r *http.Request) {
 // ─── Cache Operation Handlers ──────────────────────────────────
 
 func (a *AdminAPI) createCacheTask(w http.ResponseWriter, r *http.Request, taskType models.TaskType, auditAction models.AuditAction) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	var params models.TaskParams
 	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
 		a.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
@@ -1161,6 +1255,11 @@ func (a *AdminAPI) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AdminAPI) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+		a.writeError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
 	var settings models.AdminConfig
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 		a.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")

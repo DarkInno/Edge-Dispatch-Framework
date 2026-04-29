@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -75,7 +74,9 @@ func (s *Server) Start(ctx context.Context) error {
 			continue
 		}
 
-		go s.handleQuery(clientAddr, buf[:n])
+		query := make([]byte, n)
+		copy(query, buf[:n])
+		go s.handleQuery(clientAddr, query)
 	}
 }
 
@@ -272,6 +273,7 @@ func (s *Server) sendAResponse(txID []byte, query []byte, clientAddr *net.UDPAdd
 	if err != nil {
 		slog.Warn("dns write response failed", "err", err)
 	}
+	freeDNSBuffer(resp)
 }
 
 func (s *Server) sendNXDOMAIN(txID []byte, query []byte, clientAddr *net.UDPAddr) {
@@ -280,6 +282,7 @@ func (s *Server) sendNXDOMAIN(txID []byte, query []byte, clientAddr *net.UDPAddr
 	if err != nil {
 		slog.Warn("dns write nxdomain failed", "err", err)
 	}
+	freeDNSBuffer(resp)
 }
 
 func buildDNSResponse(txID []byte, query []byte, candidates []models.Candidate, ttl int64, qtype uint16) []byte {
@@ -291,7 +294,7 @@ func buildDNSResponse(txID []byte, query []byte, candidates []models.Candidate, 
 	buf[3] = 0x80 // RA=1, Z=0, RCODE=0
 
 	// Copy question section from query
-	copySection(query, buf, 12, len(query)-12)
+	buf, _ = copySection(query, buf, 12, len(query)-12)
 
 	buf[4] = 0x00 // QDCOUNT high
 	buf[5] = 0x01 // QDCOUNT low
@@ -344,8 +347,7 @@ func buildNXDOMAIN(txID []byte, query []byte) []byte {
 	buf[2] = 0x81
 	buf[3] = 0x83 // RCODE=3 (NXDOMAIN)
 
-	qLen := copySection(query, buf, 12, len(query)-12)
-	_ = qLen
+	buf, _ = copySection(query, buf, 12, len(query)-12)
 
 	buf[4] = 0x00 // QDCOUNT
 	buf[5] = 0x01
@@ -356,19 +358,37 @@ func buildNXDOMAIN(txID []byte, query []byte) []byte {
 }
 
 func newDNSBuffer() []byte {
-	return make([]byte, 12)
+	b := dnsBufPool.Get().([]byte)
+	return b[:0]
 }
 
-func copySection(src []byte, dst []byte, srcStart int, length int) int {
+var dnsBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 512)
+		return b
+	},
+}
+
+func freeDNSBuffer(buf []byte) {
+	dnsBufPool.Put(buf[:cap(buf)])
+}
+
+func copySection(src []byte, dst []byte, srcStart, length int) ([]byte, int) {
 	if srcStart+length > len(src) {
 		length = len(src) - srcStart
 	}
-	copied := 0
-	for i := 0; i < length; i++ {
-		dst = append(dst, src[srcStart+i])
-		copied++
+	if length <= 0 {
+		return dst, 0
 	}
-	return copied
+	need := len(dst) + length
+	if cap(dst) < need {
+		big := make([]byte, need)
+		copy(big, dst)
+		dst = big
+	}
+	dst = dst[:need]
+	copy(dst[len(dst)-length:], src[srcStart:srcStart+length])
+	return dst, length
 }
 
 func extractIP(endpoint string) net.IP {

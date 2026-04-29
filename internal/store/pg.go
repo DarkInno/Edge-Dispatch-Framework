@@ -145,6 +145,7 @@ func (s *PGStore) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_nodes_active_covering ON nodes(status, node_id) INCLUDE (name, endpoints, region, isp, capabilities, scores) WHERE status IN ('ACTIVE', 'DEGRADED');
 	CREATE INDEX IF NOT EXISTS idx_nodes_tenant_status ON nodes(tenant_id, status);
 	CREATE INDEX IF NOT EXISTS idx_nodes_project ON nodes(project_id);
+	CREATE INDEX IF NOT EXISTS idx_nodes_created_at ON nodes(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_probe_results_node_probed_at ON probe_results(node_id, probed_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_probe_results_node_success ON probe_results(node_id, success, probed_at DESC) WHERE success = true;
 	CREATE INDEX IF NOT EXISTS idx_probe_scores_covering ON probe_results(node_id, probed_at DESC, success, rtt_ms);
@@ -651,6 +652,8 @@ func (h *slowLogHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 type RedisStore struct {
 	client *redis.Client
 	hook   *slowLogHook
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewRedisStore(ctx context.Context, addr, password string) (*RedisStore, error) {
@@ -669,8 +672,9 @@ func NewRedisStore(ctx context.Context, addr, password string) (*RedisStore, err
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("connect redis: %w", err)
 	}
-	r := &RedisStore{client: client, hook: hook}
-	go r.cleanupStaleLoop(context.Background())
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	r := &RedisStore{client: client, hook: hook, ctx: bgCtx, cancel: bgCancel}
+	go r.cleanupStaleLoop(bgCtx)
 	return r, nil
 }
 
@@ -905,6 +909,9 @@ func (r *RedisStore) UnrevokeNode(ctx context.Context, nodeID string) error {
 }
 
 func (r *RedisStore) Close() error {
+	if r.cancel != nil {
+		r.cancel()
+	}
 	return r.client.Close()
 }
 

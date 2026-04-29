@@ -7,6 +7,10 @@ RUN CGO_ENABLED=0 go build -o /origin ./cmd/origin
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
+RUN adduser -D -g '' appuser
+RUN mkdir -p /tmp/edf-origin && chown appuser /tmp/edf-origin
 COPY --from=builder /origin /origin
 EXPOSE 7070
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://localhost:7070/healthz || exit 1
+USER appuser
 ENTRYPOINT ["/origin"]

@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"strconv"
 	"time"
 )
 
@@ -62,6 +63,18 @@ type Endpoint struct {
 	Scheme string `json:"scheme"`
 	Host   string `json:"host"`
 	Port   int    `json:"port"`
+}
+
+// URL returns the full endpoint URL string.
+func (e Endpoint) URL() string {
+	s := e.Host
+	if e.Port > 0 {
+		s += ":" + strconv.Itoa(e.Port)
+	}
+	if e.Scheme != "" {
+		s = e.Scheme + "://" + s
+	}
+	return s
 }
 
 // Capabilities describes the node's hardware and network capabilities.

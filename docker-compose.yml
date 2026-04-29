@@ -46,6 +46,8 @@ services:
       CP_PG_URL: "postgres://edf:edf@postgres:5432/edf?sslmode=disable&pool_max_conns=200&pool_min_conns=25&pool_max_conn_lifetime=30m&pool_max_conn_idle_time=10m&pool_health_check_period=30s"
       CP_REDIS_ADDR: "redis:6379"
       CP_TOKEN_SECRET: "demo-secret-change-in-production"
+      CP_ADMIN_ENABLED: "true"
+      CP_ADMIN_JWT_SECRET: "demo-jwt-secret-change-in-production"
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,12 +62,15 @@ services:
     ports:
       - "8880:8880"   # HTTP proxy
       - "7700:7700"   # Tunnel server
+      - "9443:9443/udp"  # HTTP/3 QUIC
     environment:
       GW_LISTEN_ADDR: ":8880"
       GW_TUNNEL_ADDR: ":7700"
       GW_CONTROL_PLANE_URL: "http://control-plane:8080"
       GW_AUTH_TOKEN: "demo-tunnel-token-change-in-production"
       GW_CP_TOKEN: "demo-secret-change-in-production"
+      GW_QUIC_ENABLED: "true"
+      GW_QUIC_LISTEN_ADDR: ":9443"
     depends_on:
       - control-plane
 
@@ -76,6 +81,7 @@ services:
       dockerfile: docker/Dockerfile.edge-agent
     ports:
       - "9090:9090"
+      - "19443:9443/udp"  # HTTP/3 QUIC
     environment:
       EA_LISTEN_ADDR: ":9090"
       EA_CONTROL_PLANE_URL: "http://control-plane:8080"
@@ -83,6 +89,8 @@ services:
       EA_CACHE_MAX_GB: "1"
       EA_ORIGIN_URL: "http://origin:7070"
       EA_NODE_TOKEN: "demo-secret-change-in-production"
+      EA_QUIC_ENABLED: "true"
+      EA_QUIC_LISTEN_ADDR: ":9443"
     depends_on:
       - control-plane
 
@@ -92,6 +100,7 @@ services:
       dockerfile: docker/Dockerfile.edge-agent
     ports:
       - "9091:9090"
+      - "29443:9443/udp"  # HTTP/3 QUIC
     environment:
       EA_LISTEN_ADDR: ":9090"
       EA_CONTROL_PLANE_URL: "http://control-plane:8080"
@@ -99,6 +108,8 @@ services:
       EA_CACHE_MAX_GB: "1"
       EA_ORIGIN_URL: "http://origin:7070"
       EA_NODE_TOKEN: "demo-secret-change-in-production"
+      EA_QUIC_ENABLED: "true"
+      EA_QUIC_LISTEN_ADDR: ":9443"
     depends_on:
       - control-plane
 

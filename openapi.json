@@ -1,0 +1,1916 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Edge Dispatch Framework API",
+    "version": "0.5.0",
+    "description": "Edge Dispatch Framework — 开源边缘分发/加速框架，通过中心调度将用户请求分配到最优边缘节点，支持 302 重定向、DNS/GSLB、网关反代等多种接入方式。"
+  },
+  "servers": [
+    { "url": "http://localhost:8080", "description": "本地 Docker 演示环境" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "EdgeAgentBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Edge Agent API key 签名验证"
+      },
+      "AdminJWT": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "管理控制台 JWT (通过 /login 获取)"
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": { "$ref": "#/components/schemas/ErrorDetail" }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "properties": {
+          "code":    { "type": "string", "description": "错误码" },
+          "message": { "type": "string", "description": "错误消息" },
+          "request_id": { "type": "string", "description": "请求追踪 ID" },
+          "details": { "type": "object", "additionalProperties": { "type": "string" } }
+        }
+      },
+      "NodeStatus": {
+        "type": "string",
+        "enum": ["REGISTERED", "ACTIVE", "DEGRADED", "QUARANTINED", "OFFLINE", "DISABLED", "MAINTENANCE"]
+      },
+      "UserRole": {
+        "type": "string",
+        "enum": ["tenant_owner", "tenant_admin", "project_operator", "project_viewer"]
+      },
+      "AdminPolicyType": {
+        "type": "string",
+        "enum": ["dispatch", "block"]
+      },
+      "IngressType": {
+        "type": "string",
+        "enum": ["302", "dns", "gateway"]
+      },
+      "TaskType": {
+        "type": "string",
+        "enum": ["prewarm", "purge", "block"]
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": ["pending", "running", "completed", "failed", "cancelled"]
+      },
+      "Endpoint": {
+        "type": "object",
+        "properties": {
+          "scheme": { "type": "string" },
+          "host":   { "type": "string" },
+          "port":   { "type": "integer" }
+        }
+      },
+      "Capabilities": {
+        "type": "object",
+        "properties": {
+          "inbound_reachable": { "type": "boolean" },
+          "cache_disk_gb":     { "type": "integer", "format": "int64" },
+          "max_uplink_mbps":   { "type": "integer", "format": "int64" },
+          "supports_https":    { "type": "boolean" },
+          "nat_type":          { "type": "string" },
+          "tunnel_required":   { "type": "boolean" }
+        }
+      },
+      "NodeScores": {
+        "type": "object",
+        "properties": {
+          "reachable_score": { "type": "number", "format": "double" },
+          "health_score":    { "type": "number", "format": "double" },
+          "risk_score":      { "type": "number", "format": "double" }
+        }
+      },
+      "NodeRuntime": {
+        "type": "object",
+        "properties": {
+          "cpu":           { "type": "number", "format": "double" },
+          "mem_mb":        { "type": "integer", "format": "int64" },
+          "disk_free_gb":  { "type": "integer", "format": "int64" },
+          "conn":          { "type": "integer", "format": "int64" }
+        }
+      },
+      "NodeTraffic": {
+        "type": "object",
+        "properties": {
+          "egress_mbps":  { "type": "number", "format": "double" },
+          "ingress_mbps": { "type": "number", "format": "double" },
+          "err_5xx_rate": { "type": "number", "format": "double" }
+        }
+      },
+      "NodeCache": {
+        "type": "object",
+        "properties": {
+          "hit_ratio": { "type": "number", "format": "double" }
+        }
+      },
+      "ContentSummary": {
+        "type": "object",
+        "properties": {
+          "node_id":      { "type": "string" },
+          "hot_keys":     { "type": "array", "items": { "type": "string" } },
+          "bloom_filter": { "type": "string", "format": "byte" },
+          "bloom_k":      { "type": "integer" },
+          "total_keys":   { "type": "integer", "format": "int64" },
+          "updated_at":   { "type": "integer", "format": "int64" }
+        }
+      },
+      "Node": {
+        "type": "object",
+        "properties": {
+          "node_id":        { "type": "string" },
+          "tenant_id":      { "type": "string" },
+          "project_id":     { "type": "string" },
+          "name":           { "type": "string" },
+          "region":         { "type": "string" },
+          "isp":            { "type": "string" },
+          "asn":            { "type": "string" },
+          "status":         { "$ref": "#/components/schemas/NodeStatus" },
+          "weight":         { "type": "integer" },
+          "last_seen_at":   { "type": "string", "format": "date-time" },
+          "created_at":     { "type": "string", "format": "date-time" },
+          "updated_at":     { "type": "string", "format": "date-time" },
+          "endpoints":      { "type": "array", "items": { "$ref": "#/components/schemas/Endpoint" } },
+          "capabilities":   { "$ref": "#/components/schemas/Capabilities" },
+          "scores":         { "$ref": "#/components/schemas/NodeScores" },
+          "labels":         { "type": "object", "additionalProperties": { "type": "string" } },
+          "disable_reason": { "type": "string" },
+          "maintain_until": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "NodeAuth": {
+        "type": "object",
+        "properties": {
+          "type":  { "type": "string" },
+          "token": { "type": "string" },
+          "exp":   { "type": "integer", "format": "int64" }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": ["node_name"],
+        "properties": {
+          "node_name":        { "type": "string", "description": "节点名称" },
+          "public_endpoints": { "type": "array", "items": { "$ref": "#/components/schemas/Endpoint" } },
+          "region":           { "type": "string" },
+          "isp":              { "type": "string" },
+          "tenant_id":        { "type": "string" },
+          "project_id":       { "type": "string" },
+          "capabilities":     { "$ref": "#/components/schemas/Capabilities" }
+        }
+      },
+      "RegisterResponse": {
+        "type": "object",
+        "properties": {
+          "node_id": { "type": "string" },
+          "auth":    { "$ref": "#/components/schemas/NodeAuth" }
+        }
+      },
+      "HeartbeatRequest": {
+        "type": "object",
+        "required": ["node_id"],
+        "properties": {
+          "node_id":         { "type": "string", "description": "节点 ID" },
+          "ts":              { "type": "integer", "format": "int64" },
+          "runtime":         { "$ref": "#/components/schemas/NodeRuntime" },
+          "traffic":         { "$ref": "#/components/schemas/NodeTraffic" },
+          "cache":           { "$ref": "#/components/schemas/NodeCache" },
+          "content_summary": { "$ref": "#/components/schemas/ContentSummary" }
+        }
+      },
+      "ClientInfo": {
+        "type": "object",
+        "properties": {
+          "ip":     { "type": "string", "description": "客户端 IP (为空时自动填充)" },
+          "region": { "type": "string" },
+          "isp":    { "type": "string" }
+        }
+      },
+      "ResourceInfo": {
+        "type": "object",
+        "required": ["key"],
+        "properties": {
+          "type":   { "type": "string" },
+          "key":    { "type": "string", "description": "资源标识" },
+          "scheme": { "type": "string" }
+        }
+      },
+      "ClientHints": {
+        "type": "object",
+        "properties": {
+          "need_range": { "type": "boolean" }
+        }
+      },
+      "DispatchRequest": {
+        "type": "object",
+        "required": ["resource"],
+        "properties": {
+          "client":   { "$ref": "#/components/schemas/ClientInfo" },
+          "resource": { "$ref": "#/components/schemas/ResourceInfo" },
+          "hints":    { "$ref": "#/components/schemas/ClientHints" }
+        }
+      },
+      "DispatchToken": {
+        "type": "object",
+        "properties": {
+          "type":  { "type": "string" },
+          "value": { "type": "string" },
+          "exp":   { "type": "integer", "format": "int64" }
+        }
+      },
+      "CandidateMeta": {
+        "type": "object",
+        "properties": {
+          "region":      { "type": "string" },
+          "isp":         { "type": "string" },
+          "proxy_mode":  { "type": "string", "enum": ["direct", "tunnel"] },
+          "gateway_url": { "type": "string" }
+        }
+      },
+      "Candidate": {
+        "type": "object",
+        "properties": {
+          "id":       { "type": "string" },
+          "endpoint": { "type": "string" },
+          "weight":   { "type": "integer" },
+          "meta":     { "$ref": "#/components/schemas/CandidateMeta" }
+        }
+      },
+      "DispatchResponse": {
+        "type": "object",
+        "properties": {
+          "request_id": { "type": "string" },
+          "ttl_ms":     { "type": "integer", "format": "int64" },
+          "token":      { "$ref": "#/components/schemas/DispatchToken" },
+          "candidates": { "type": "array", "items": { "$ref": "#/components/schemas/Candidate" } }
+        }
+      },
+      "RoleBinding": {
+        "type": "object",
+        "properties": {
+          "role":       { "$ref": "#/components/schemas/UserRole" },
+          "tenant_id":  { "type": "string" },
+          "project_id": { "type": "string" }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "user_id":      { "type": "string" },
+          "tenant_id":    { "type": "string" },
+          "email":        { "type": "string", "format": "email" },
+          "display_name": { "type": "string" },
+          "created_at":   { "type": "string", "format": "date-time" },
+          "updated_at":   { "type": "string", "format": "date-time" },
+          "roles":        { "type": "array", "items": { "$ref": "#/components/schemas/RoleBinding" } }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email":    { "type": "string", "format": "email" },
+          "password": { "type": "string", "format": "password" }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "token":         { "type": "string" },
+          "refresh_token": { "type": "string" },
+          "user":          { "$ref": "#/components/schemas/User" },
+          "expires_at":    { "type": "integer", "format": "int64" },
+          "roles":         { "type": "array", "items": { "$ref": "#/components/schemas/RoleBinding" } }
+        }
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "required": ["refresh_token"],
+        "properties": {
+          "refresh_token": { "type": "string" }
+        }
+      },
+      "RefreshResponse": {
+        "type": "object",
+        "properties": {
+          "token":         { "type": "string" },
+          "expires_at":    { "type": "integer", "format": "int64" },
+          "refresh_token": { "type": "string" }
+        }
+      },
+      "Tenant": {
+        "type": "object",
+        "properties": {
+          "tenant_id":   { "type": "string" },
+          "name":        { "type": "string" },
+          "description": { "type": "string" },
+          "created_at":  { "type": "string", "format": "date-time" },
+          "updated_at":  { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateTenantRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":        { "type": "string" },
+          "description": { "type": "string" },
+          "tenant_id":   { "type": "string", "description": "自动生成" }
+        }
+      },
+      "UpdateTenantRequest": {
+        "type": "object",
+        "properties": {
+          "name":        { "type": "string" },
+          "description": { "type": "string" }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "properties": {
+          "project_id":  { "type": "string" },
+          "tenant_id":   { "type": "string" },
+          "name":        { "type": "string" },
+          "description": { "type": "string" },
+          "created_at":  { "type": "string", "format": "date-time" },
+          "updated_at":  { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateProjectRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":        { "type": "string" },
+          "description": { "type": "string" }
+        }
+      },
+      "UpdateProjectRequest": {
+        "type": "object",
+        "properties": {
+          "name":        { "type": "string" },
+          "description": { "type": "string" }
+        }
+      },
+      "CreateUserRequest": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "tenant_id":    { "type": "string" },
+          "email":        { "type": "string", "format": "email" },
+          "display_name": { "type": "string" },
+          "password":     { "type": "string", "format": "password" },
+          "roles":        { "type": "array", "items": { "$ref": "#/components/schemas/RoleBinding" } }
+        }
+      },
+      "UpdateUserRequest": {
+        "type": "object",
+        "properties": {
+          "display_name": { "type": "string" },
+          "roles":        { "type": "array", "items": { "$ref": "#/components/schemas/RoleBinding" } }
+        }
+      },
+      "NodeAdminPatch": {
+        "type": "object",
+        "properties": {
+          "labels":         { "type": "object", "additionalProperties": { "type": "string" } },
+          "weight":         { "type": "integer" },
+          "project_id":     { "type": "string" },
+          "tenant_id":      { "type": "string" },
+          "disabled":       { "type": "boolean" },
+          "disable_reason": { "type": "string" },
+          "disable_until":  { "type": "string", "format": "date-time" }
+        }
+      },
+      "AdminPolicy": {
+        "type": "object",
+        "properties": {
+          "policy_id":    { "type": "string" },
+          "name":         { "type": "string" },
+          "type":         { "$ref": "#/components/schemas/AdminPolicyType" },
+          "content":      { "description": "自由格式 JSON" },
+          "description":  { "type": "string" },
+          "tenant_id":    { "type": "string" },
+          "project_id":   { "type": "string" },
+          "version":      { "type": "integer" },
+          "is_published": { "type": "boolean" },
+          "created_at":   { "type": "string", "format": "date-time" },
+          "updated_at":   { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreatePolicyRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":        { "type": "string" },
+          "type":        { "$ref": "#/components/schemas/AdminPolicyType" },
+          "content":     { "description": "自由格式 JSON" },
+          "description": { "type": "string" },
+          "tenant_id":   { "type": "string" },
+          "project_id":  { "type": "string" }
+        }
+      },
+      "UpdatePolicyRequest": {
+        "type": "object",
+        "properties": {
+          "name":        { "type": "string" },
+          "type":        { "$ref": "#/components/schemas/AdminPolicyType" },
+          "content":     { "description": "自由格式 JSON" },
+          "description": { "type": "string" }
+        }
+      },
+      "AdminPolicyVersion": {
+        "type": "object",
+        "properties": {
+          "version_id": { "type": "string" },
+          "policy_id":  { "type": "string" },
+          "version":    { "type": "integer" },
+          "content":    { "description": "自由格式 JSON" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Ingress": {
+        "type": "object",
+        "properties": {
+          "ingress_id": { "type": "string" },
+          "name":       { "type": "string" },
+          "type":       { "$ref": "#/components/schemas/IngressType" },
+          "domain":     { "type": "string" },
+          "config":     { "description": "自由格式 JSON" },
+          "tenant_id":  { "type": "string" },
+          "project_id": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateIngressRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":       { "type": "string" },
+          "type":       { "$ref": "#/components/schemas/IngressType" },
+          "domain":     { "type": "string" },
+          "config":     { "description": "自由格式 JSON" },
+          "tenant_id":  { "type": "string" },
+          "project_id": { "type": "string" }
+        }
+      },
+      "UpdateIngressRequest": {
+        "type": "object",
+        "properties": {
+          "name":   { "type": "string" },
+          "type":   { "$ref": "#/components/schemas/IngressType" },
+          "domain": { "type": "string" },
+          "config": { "description": "自由格式 JSON" }
+        }
+      },
+      "TaskParams": {
+        "type": "object",
+        "required": ["target_scope"],
+        "properties": {
+          "target_scope": { "type": "string", "enum": ["all", "region", "node_list"] },
+          "object_key":   { "type": "string" },
+          "key_prefix":   { "type": "string" },
+          "target_nodes": { "type": "array", "items": { "type": "string" } },
+          "concurrency":  { "type": "integer" },
+          "rate_limit":   { "type": "integer" }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "properties": {
+          "task_id":     { "type": "string" },
+          "tenant_id":   { "type": "string" },
+          "project_id":  { "type": "string" },
+          "creator_id":  { "type": "string" },
+          "type":        { "$ref": "#/components/schemas/TaskType" },
+          "status":      { "$ref": "#/components/schemas/TaskStatus" },
+          "progress":    { "type": "integer" },
+          "total_nodes": { "type": "integer" },
+          "done_nodes":  { "type": "integer" },
+          "params":      { "description": "自由格式 JSON" },
+          "result":      { "description": "自由格式 JSON" },
+          "created_at":  { "type": "string", "format": "date-time" },
+          "updated_at":  { "type": "string", "format": "date-time" }
+        }
+      },
+      "DashboardAlert": {
+        "type": "object",
+        "properties": {
+          "timestamp": { "type": "string", "format": "date-time" },
+          "type":      { "type": "string", "enum": ["node_offline", "origin_spike", "error_spike"] },
+          "message":   { "type": "string" },
+          "node_id":   { "type": "string" }
+        }
+      },
+      "DashboardMetrics": {
+        "type": "object",
+        "properties": {
+          "qps":             { "type": "number", "format": "double" },
+          "total_requests":  { "type": "integer", "format": "int64" },
+          "success_rate":    { "type": "number", "format": "double" },
+          "error_rate":      { "type": "number", "format": "double" },
+          "hit_rate":        { "type": "number", "format": "double" },
+          "origin_ratio":    { "type": "number", "format": "double" },
+          "p95_latency_ms":  { "type": "number", "format": "double" },
+          "online_nodes":    { "type": "integer" },
+          "offline_nodes":   { "type": "integer" },
+          "total_nodes":     { "type": "integer" },
+          "recent_alerts":   { "type": "array", "items": { "$ref": "#/components/schemas/DashboardAlert" } }
+        }
+      },
+      "AdminConfig": {
+        "type": "object",
+        "properties": {
+          "oidc_enabled":       { "type": "boolean" },
+          "oidc_provider_url":  { "type": "string" },
+          "oidc_client_id":     { "type": "string" },
+          "local_auth_enabled": { "type": "boolean" },
+          "read_only_mode":     { "type": "boolean" },
+          "ip_allowlist":       { "type": "array", "items": { "type": "string" } },
+          "grafana_url":        { "type": "string" },
+          "prometheus_url":     { "type": "string" },
+          "loki_url":           { "type": "string" }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "properties": {
+          "id":            { "type": "string" },
+          "tenant_id":     { "type": "string" },
+          "project_id":    { "type": "string" },
+          "actor_id":      { "type": "string" },
+          "actor_email":   { "type": "string" },
+          "action":        { "type": "string" },
+          "resource_type": { "type": "string" },
+          "resource_id":   { "type": "string" },
+          "before":        { "description": "自由格式 JSON" },
+          "after":         { "description": "自由格式 JSON" },
+          "request_id":    { "type": "string" },
+          "source_ip":     { "type": "string" },
+          "user_agent":    { "type": "string" },
+          "result":        { "type": "string" },
+          "created_at":    { "type": "string", "format": "date-time" }
+        }
+      },
+      "PaginatedResponse_Nodes": {
+        "type": "object",
+        "properties": {
+          "data":     { "type": "array", "items": { "$ref": "#/components/schemas/Node" } },
+          "total":    { "type": "integer" },
+          "limit":    { "type": "integer" },
+          "offset":   { "type": "integer" },
+          "has_more": { "type": "boolean" }
+        }
+      },
+      "PaginatedResponse_Tasks": {
+        "type": "object",
+        "properties": {
+          "data":     { "type": "array", "items": { "$ref": "#/components/schemas/Task" } },
+          "total":    { "type": "integer" },
+          "limit":    { "type": "integer" },
+          "offset":   { "type": "integer" },
+          "has_more": { "type": "boolean" }
+        }
+      },
+      "PaginatedResponse_Audit": {
+        "type": "object",
+        "properties": {
+          "data":     { "type": "array", "items": { "$ref": "#/components/schemas/AuditEvent" } },
+          "total":    { "type": "integer" },
+          "limit":    { "type": "integer" },
+          "offset":   { "type": "integer" },
+          "has_more": { "type": "boolean" }
+        }
+      },
+      "DisableNodeRequest": {
+        "type": "object",
+        "required": ["reason"],
+        "properties": {
+          "reason":  { "type": "string", "description": "关闭原因" },
+          "message": { "type": "string" },
+          "until":   { "type": "string", "format": "date-time", "description": "维护截止时间" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": ["Public"],
+        "summary": "健康检查",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "time":   { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["Public"],
+        "summary": "Prometheus 指标",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Prometheus text format",
+            "content": { "text/plain": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/v1/nodes/register": {
+      "post": {
+        "tags": ["Edge Agent"],
+        "summary": "注册边缘节点",
+        "security": [{ "EdgeAgentBearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RegisterRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "注册成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RegisterResponse" }
+              }
+            }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "401": { "description": "未认证", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "注册失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/v1/nodes/heartbeat": {
+      "post": {
+        "tags": ["Edge Agent"],
+        "summary": "节点心跳上报",
+        "security": [{ "EdgeAgentBearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/HeartbeatRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "节点不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "心跳失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/v1/nodes/{nodeID}": {
+      "get": {
+        "tags": ["Edge Agent"],
+        "summary": "查询节点信息",
+        "security": [{ "EdgeAgentBearer": [] }],
+        "parameters": [
+          { "name": "nodeID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "节点 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Node" } } }
+          },
+          "404": { "description": "节点不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Edge Agent"],
+        "summary": "吊销节点",
+        "security": [{ "EdgeAgentBearer": [] }],
+        "parameters": [
+          { "name": "nodeID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "节点 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "revoked" } }
+                }
+              }
+            }
+          },
+          "404": { "description": "节点不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "吊销失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/v1/dispatch/resolve": {
+      "post": {
+        "tags": ["Edge Agent"],
+        "summary": "调度分发（返回最优边缘节点）",
+        "security": [{ "EdgeAgentBearer": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DispatchRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "分发结果",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DispatchResponse" }
+              }
+            }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "403": { "description": "IP 被封禁", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "429": { "description": "请求被限流", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "分发失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/obj/{key}": {
+      "get": {
+        "tags": ["Edge Agent"],
+        "summary": "对象回源（302 重定向到边缘节点）",
+        "security": [{ "EdgeAgentBearer": [] }],
+        "parameters": [
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" }, "description": "对象路径 (如 /obj/my/video.mp4)" }
+        ],
+        "responses": {
+          "302": { "description": "重定向到最优边缘节点" },
+          "503": { "description": "无可用边缘节点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/healthz": {
+      "get": {
+        "tags": ["Admin - 认证"],
+        "summary": "管理 API 健康检查",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "time":   { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/admin/v1/login": {
+      "post": {
+        "tags": ["Admin - 认证"],
+        "summary": "管理员登录",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoginResponse" }
+              }
+            }
+          },
+          "401": { "description": "凭证无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "403": { "description": "本地认证未启用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "认证失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/refresh": {
+      "post": {
+        "tags": ["Admin - 认证"],
+        "summary": "刷新 JWT Token",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RefreshRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "刷新成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RefreshResponse" }
+              }
+            }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "401": { "description": "Refresh Token 无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "认证失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/logout": {
+      "post": {
+        "tags": ["Admin - 认证"],
+        "summary": "登出",
+        "security": [{ "AdminJWT": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "logged_out" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/admin/v1/me": {
+      "get": {
+        "tags": ["Admin - 认证"],
+        "summary": "获取当前登录用户信息",
+        "security": [{ "AdminJWT": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } }
+          },
+          "404": { "description": "用户不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/tenants": {
+      "get": {
+        "tags": ["Admin - 租户"],
+        "summary": "获取租户列表",
+        "security": [{ "AdminJWT": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Tenant" } }
+              }
+            }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "tags": ["Admin - 租户"],
+        "summary": "创建租户",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateTenantRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Tenant" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/tenants/{tenantID}": {
+      "get": {
+        "tags": ["Admin - 租户"],
+        "summary": "获取租户详情",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenantID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "租户 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Tenant" } } }
+          },
+          "404": { "description": "租户不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "put": {
+        "tags": ["Admin - 租户"],
+        "summary": "更新租户",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenantID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "租户 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateTenantRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Tenant" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "租户不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "更新失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Admin - 租户"],
+        "summary": "删除租户",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenantID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "租户 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "deleted" } }
+                }
+              }
+            }
+          },
+          "500": { "description": "删除失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/tenants/{tenantID}/users": {
+      "get": {
+        "tags": ["Admin - 租户"],
+        "summary": "获取租户下用户列表",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenantID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "租户 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/User" } }
+              }
+            }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/tenants/{tenantID}/projects": {
+      "get": {
+        "tags": ["Admin - 项目"],
+        "summary": "获取租户下项目列表",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenantID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "租户 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } }
+              }
+            }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "tags": ["Admin - 项目"],
+        "summary": "在租户下创建项目",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenantID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "租户 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateProjectRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/projects/{projectID}": {
+      "get": {
+        "tags": ["Admin - 项目"],
+        "summary": "获取项目详情",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "projectID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "项目 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } }
+          },
+          "404": { "description": "项目不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "put": {
+        "tags": ["Admin - 项目"],
+        "summary": "更新项目",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "projectID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "项目 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateProjectRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "项目不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "更新失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Admin - 项目"],
+        "summary": "删除项目",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "projectID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "项目 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "deleted" } }
+                }
+              }
+            }
+          },
+          "500": { "description": "删除失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/users": {
+      "post": {
+        "tags": ["Admin - 用户"],
+        "summary": "创建用户",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateUserRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/users/{userID}": {
+      "get": {
+        "tags": ["Admin - 用户"],
+        "summary": "获取用户详情",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "userID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "用户 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } }
+          },
+          "404": { "description": "用户不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "put": {
+        "tags": ["Admin - 用户"],
+        "summary": "更新用户",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "userID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "用户 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateUserRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "用户不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "更新失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Admin - 用户"],
+        "summary": "删除用户",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "userID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "用户 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "deleted" } }
+                }
+              }
+            }
+          },
+          "500": { "description": "删除失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/nodes": {
+      "get": {
+        "tags": ["Admin - 节点"],
+        "summary": "获取节点列表（分页）",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenant_id",  "in": "query", "schema": { "type": "string" }, "description": "按租户过滤" },
+          { "name": "project_id", "in": "query", "schema": { "type": "string" }, "description": "按项目过滤" },
+          { "name": "status",     "in": "query", "schema": { "$ref": "#/components/schemas/NodeStatus" }, "description": "按状态过滤" },
+          { "name": "region",     "in": "query", "schema": { "type": "string" }, "description": "按区域过滤" },
+          { "name": "isp",        "in": "query", "schema": { "type": "string" }, "description": "按 ISP 过滤" },
+          { "name": "limit",      "in": "query", "schema": { "type": "integer", "default": 50 }, "description": "每页数量" },
+          { "name": "offset",     "in": "query", "schema": { "type": "integer", "default": 0 }, "description": "偏移量" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaginatedResponse_Nodes" } } }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/nodes/{nodeID}": {
+      "get": {
+        "tags": ["Admin - 节点"],
+        "summary": "获取节点详情",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "nodeID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "节点 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Node" } } }
+          },
+          "404": { "description": "节点不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "patch": {
+        "tags": ["Admin - 节点"],
+        "summary": "更新节点属性",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "nodeID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "节点 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/NodeAdminPatch" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status":  { "type": "string", "example": "patched" },
+                    "node_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "更新失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/nodes/{nodeID}:disable": {
+      "post": {
+        "tags": ["Admin - 节点"],
+        "summary": "禁用节点",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "nodeID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "节点 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DisableNodeRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status":  { "type": "string", "example": "disabled" },
+                    "node_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "500": { "description": "操作失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/nodes/{nodeID}:enable": {
+      "post": {
+        "tags": ["Admin - 节点"],
+        "summary": "启用节点",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "nodeID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "节点 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status":  { "type": "string", "example": "enabled" },
+                    "node_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "500": { "description": "操作失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/nodes/{nodeID}:revoke": {
+      "post": {
+        "tags": ["Admin - 节点"],
+        "summary": "吊销节点",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "nodeID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "节点 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status":  { "type": "string", "example": "revoked" },
+                    "node_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "500": { "description": "操作失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/policies": {
+      "get": {
+        "tags": ["Admin - 策略"],
+        "summary": "获取策略列表",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenant_id",  "in": "query", "schema": { "type": "string" }, "description": "按租户过滤" },
+          { "name": "project_id", "in": "query", "schema": { "type": "string" }, "description": "按项目过滤" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/AdminPolicy" } }
+              }
+            }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "tags": ["Admin - 策略"],
+        "summary": "创建策略",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreatePolicyRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminPolicy" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/policies/{policyID}": {
+      "get": {
+        "tags": ["Admin - 策略"],
+        "summary": "获取策略详情",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "policyID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "策略 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminPolicy" } } }
+          },
+          "404": { "description": "策略不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "put": {
+        "tags": ["Admin - 策略"],
+        "summary": "更新策略",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "policyID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "策略 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdatePolicyRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminPolicy" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "策略不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "更新失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Admin - 策略"],
+        "summary": "删除策略",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "policyID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "策略 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "deleted" } }
+                }
+              }
+            }
+          },
+          "500": { "description": "删除失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/policies/{policyID}:publish": {
+      "post": {
+        "tags": ["Admin - 策略"],
+        "summary": "发布策略",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "policyID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "策略 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status":    { "type": "string", "example": "published" },
+                    "policy_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "500": { "description": "发布失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/policies/{policyID}:rollback": {
+      "post": {
+        "tags": ["Admin - 策略"],
+        "summary": "回滚策略到指定版本",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "policyID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "策略 ID" },
+          { "name": "to", "in": "query", "required": true, "schema": { "type": "integer" }, "description": "目标版本号" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status":  { "type": "string", "example": "rolled_back" },
+                    "version": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "缺少目标版本号", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "版本不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "回滚失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/policies/{policyID}/versions": {
+      "get": {
+        "tags": ["Admin - 策略"],
+        "summary": "获取策略版本列表",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "policyID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "策略 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/AdminPolicyVersion" } }
+              }
+            }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/ingresses": {
+      "get": {
+        "tags": ["Admin - 入口"],
+        "summary": "获取入口列表",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "tenant_id",  "in": "query", "schema": { "type": "string" }, "description": "按租户过滤" },
+          { "name": "project_id", "in": "query", "schema": { "type": "string" }, "description": "按项目过滤" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Ingress" } }
+              }
+            }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "post": {
+        "tags": ["Admin - 入口"],
+        "summary": "创建入口",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateIngressRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ingress" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/ingresses/{ingressID}": {
+      "get": {
+        "tags": ["Admin - 入口"],
+        "summary": "获取入口详情",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "ingressID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "入口 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ingress" } } }
+          },
+          "404": { "description": "入口不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "put": {
+        "tags": ["Admin - 入口"],
+        "summary": "更新入口",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "ingressID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "入口 ID" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateIngressRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ingress" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "404": { "description": "入口不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "更新失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      },
+      "delete": {
+        "tags": ["Admin - 入口"],
+        "summary": "删除入口",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "ingressID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "入口 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "deleted" } }
+                }
+              }
+            }
+          },
+          "500": { "description": "删除失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/cache/prewarm": {
+      "post": {
+        "tags": ["Admin - 缓存"],
+        "summary": "预热缓存",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskParams" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/cache/purge": {
+      "post": {
+        "tags": ["Admin - 缓存"],
+        "summary": "清除缓存",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskParams" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/objects/block": {
+      "post": {
+        "tags": ["Admin - 缓存"],
+        "summary": "封禁对象",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskParams" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "500": { "description": "创建失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/tasks": {
+      "get": {
+        "tags": ["Admin - 任务"],
+        "summary": "获取任务列表（分页）",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "status", "in": "query", "schema": { "$ref": "#/components/schemas/TaskStatus" }, "description": "按状态过滤" },
+          { "name": "type",   "in": "query", "schema": { "$ref": "#/components/schemas/TaskType" }, "description": "按类型过滤" },
+          { "name": "limit",  "in": "query", "schema": { "type": "integer", "default": 50 }, "description": "每页数量" },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 }, "description": "偏移量" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaginatedResponse_Tasks" } } }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/tasks/{taskID}": {
+      "get": {
+        "tags": ["Admin - 任务"],
+        "summary": "获取任务详情",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "taskID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "任务 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Task" } } }
+          },
+          "404": { "description": "任务不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/tasks/{taskID}:cancel": {
+      "post": {
+        "tags": ["Admin - 任务"],
+        "summary": "取消任务",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "taskID", "in": "path", "required": true, "schema": { "type": "string" }, "description": "任务 ID" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status":  { "type": "string", "example": "cancelled" },
+                    "task_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "500": { "description": "取消失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/audit": {
+      "get": {
+        "tags": ["Admin - 审计"],
+        "summary": "查询审计日志（分页）",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "actor_id",      "in": "query", "schema": { "type": "string" }, "description": "按操作者过滤" },
+          { "name": "action",        "in": "query", "schema": { "type": "string" }, "description": "按操作过滤" },
+          { "name": "resource_type", "in": "query", "schema": { "type": "string" }, "description": "按资源类型过滤" },
+          { "name": "resource_id",   "in": "query", "schema": { "type": "string" }, "description": "按资源 ID 过滤" },
+          { "name": "result",        "in": "query", "schema": { "type": "string", "enum": ["success", "failure"] }, "description": "按结果过滤" },
+          { "name": "limit",         "in": "query", "schema": { "type": "integer" }, "description": "每页数量" },
+          { "name": "offset",        "in": "query", "schema": { "type": "integer" }, "description": "偏移量" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PaginatedResponse_Audit" } } }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/audit/export": {
+      "get": {
+        "tags": ["Admin - 审计"],
+        "summary": "导出审计日志",
+        "security": [{ "AdminJWT": [] }],
+        "parameters": [
+          { "name": "actor_id",      "in": "query", "schema": { "type": "string" }, "description": "按操作者过滤" },
+          { "name": "action",        "in": "query", "schema": { "type": "string" }, "description": "按操作过滤" },
+          { "name": "resource_type", "in": "query", "schema": { "type": "string" }, "description": "按资源类型过滤" },
+          { "name": "resource_id",   "in": "query", "schema": { "type": "string" }, "description": "按资源 ID 过滤" },
+          { "name": "result",        "in": "query", "schema": { "type": "string", "enum": ["success", "failure"] }, "description": "按结果过滤" },
+          { "name": "format",        "in": "query", "schema": { "type": "string", "enum": ["csv", "json"], "default": "csv" }, "description": "导出格式" }
+        ],
+        "responses": {
+          "200": {
+            "description": "导出文件下载",
+            "content": {
+              "text/csv":          { "schema": { "type": "string", "format": "binary" } },
+              "application/json":  { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/AuditEvent" } } }
+            }
+          },
+          "500": { "description": "导出失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/dashboard": {
+      "get": {
+        "tags": ["Admin - 仪表盘"],
+        "summary": "获取仪表盘指标",
+        "security": [{ "AdminJWT": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DashboardMetrics" } } }
+          },
+          "500": { "description": "查询失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/internal/admin/v1/settings": {
+      "get": {
+        "tags": ["Admin - 设置"],
+        "summary": "获取系统设置",
+        "security": [{ "AdminJWT": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminConfig" } } }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Admin - 设置"],
+        "summary": "更新系统设置",
+        "security": [{ "AdminJWT": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AdminConfig" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdminConfig" } } }
+          },
+          "400": { "description": "请求参数错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    }
+  },
+  "tags": [
+    { "name": "Public", "description": "公开端点，无需认证" },
+    { "name": "Edge Agent", "description": "边缘节点 API（Bearer Token 认证）" },
+    { "name": "Admin - 认证", "description": "登录 / Token 管理" },
+    { "name": "Admin - 租户", "description": "多租户管理" },
+    { "name": "Admin - 项目", "description": "项目管理" },
+    { "name": "Admin - 用户", "description": "用户管理" },
+    { "name": "Admin - 节点", "description": "边缘节点管理" },
+    { "name": "Admin - 策略", "description": "调度/封禁策略管理" },
+    { "name": "Admin - 入口", "description": "入口（302/DNS/网关）管理" },
+    { "name": "Admin - 缓存", "description": "缓存预热 / 清除 / 封禁" },
+    { "name": "Admin - 任务", "description": "异步任务管理" },
+    { "name": "Admin - 审计", "description": "操作审计日志" },
+    { "name": "Admin - 仪表盘", "description": "实时监控指标" },
+    { "name": "Admin - 设置", "description": "系统设置" }
+  ]
+}

@@ -70,11 +70,14 @@ services:
     ports:
       - "8880:8880"
       - "7700:7700"
+      - "9443:9443/udp"  # HTTP/3 QUIC
     environment:
       GW_LISTEN_ADDR: ":8880"
       GW_TUNNEL_ADDR: ":7700"
       GW_CONTROL_PLANE_URL: "http://control-plane:8080"
       GW_AUTH_TOKEN: "${GW_AUTH_TOKEN:-demo-tunnel-token-change-in-production}"
+      GW_QUIC_ENABLED: "${GW_QUIC_ENABLED:-true}"
+      GW_QUIC_LISTEN_ADDR: "${GW_QUIC_LISTEN_ADDR:-:9443}"
     depends_on:
       - control-plane
     restart: unless-stopped

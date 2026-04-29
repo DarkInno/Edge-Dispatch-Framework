@@ -6,5 +6,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /stress ./cmd/stress
 
 FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+RUN adduser -D -g '' appuser
 COPY --from=builder /stress /usr/local/bin/stress
+USER appuser
 ENTRYPOINT ["stress"]

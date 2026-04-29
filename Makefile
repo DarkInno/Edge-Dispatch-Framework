@@ -8,6 +8,14 @@ build:
 	go build -o bin/dns-adapter ./cmd/dns-adapter
 	go build -o bin/gateway ./cmd/gateway
 
+build-quic:
+	go build -tags quic -o bin/control-plane ./cmd/control-plane
+	go build -tags quic -o bin/edge-agent ./cmd/edge-agent
+	go build -tags quic -o bin/origin ./cmd/origin
+	go build -tags quic -o bin/stress ./cmd/stress
+	go build -tags quic -o bin/dns-adapter ./cmd/dns-adapter
+	go build -tags quic -o bin/gateway ./cmd/gateway
+
 run-cp: build
 	./bin/control-plane
 
@@ -44,6 +52,19 @@ test-cover-html:
 
 test-short:
 	go test ./... -short -count=1 -timeout 30s
+
+test-quic:
+	go test ./... -tags quic -count=1 -timeout 60s
+
+test-quic-verbose:
+	go test ./... -tags quic -count=1 -timeout 60s -v
+
+test-quic-race:
+	go test ./... -tags quic -count=1 -timeout 120s -race
+
+test-quic-cover:
+	go test ./... -tags quic -count=1 -timeout 60s -coverprofile=coverage_quic.out
+	go tool cover -func=coverage_quic.out
 
 test-tunnel:
 	go test ./internal/tunnel/... -count=1 -timeout 60s -v

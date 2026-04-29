@@ -1,6 +1,6 @@
 # Edge Dispatch Framework
 
-> 开源边缘分发/加速框架：**Anycast（可选）+ Edge 节点 + 中心调度**，默认 302 重定向，支持 DNS/GSLB、网关反代等多种接入方式。
+> Open-source edge delivery/acceleration framework: **Anycast (optional) + Edge Nodes + Central Scheduling**, default 302 redirect, supporting DNS/GSLB, gateway reverse proxy, and other access modes.
 
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -8,45 +8,46 @@
 
 ---
 
-## 它能做什么
+## What It Does
 
-| 场景 | 说明 | 状态 |
+| Scenario | Description | Status |
 |------|------|------|
-| **下载/点播加速** | HTTP 对象分发、Range 断点续传、边缘缓存、回源 | ✅ |
-| **多入口调度** | 302 重定向、DNS/GSLB、网关反代 | ✅ |
-| **NAT 节点穿透** | 反向隧道，让内网节点也能提供服务 | ✅ |
-| **内容感知调度** | Bloom Filter + 热内容精确索引，命中率优先 | ✅ |
-| **直播分片分发** | HLS/DASH 滑动窗口缓存 + 预取 | ✅ |
-| **Web 管理控制台** | 可视化管理面板，监控节点、调度、数据 | [Webmanager](https://github.com/im10furry/Edge-Dispatch-Framework-Webmanager) |
-| **HTTP/3 / QUIC** | 基于 UDP 的下一代传输 | 🔜 Roadmap |
+| **Download/VOD Acceleration** | HTTP object delivery, Range byte-range requests, edge caching, origin pull | ✅ |
+| **Multi-Ingress Dispatch** | 302 redirect, DNS/GSLB, gateway reverse proxy | ✅ |
+| **NAT Node Penetration** | Reverse tunnel, enables intranet nodes to serve traffic | ✅ |
+| **Content-Aware Scheduling** | Bloom Filter + hot content exact indexing, hit-rate-first routing | ✅ |
+| **Live Stream Segment Delivery** | HLS/DASH sliding-window cache + prefetch | ✅ |
+| **Web Admin Console** | Visual management panel for nodes, dispatch, and data monitoring | [Webmanager](https://github.com/im10furry/Edge-Dispatch-Framework-Webmanager) |
+| **HTTP/3 / QUIC** | Next-gen UDP-based transport | 🔜 Roadmap |
 
-## 架构概览
+## Architecture Overview
 
 ```
 ▲                              ▲
 │   ┌───────────────────┐      │
 │   │  Web Manager (UI) │      │ Admin API
-│   │  管理控制台/监控    │      │
+│   │  Admin Console     │      │
 │   └────────┬──────────┘      │
 │            │                 │
 ┌────────────┼─────────────────┼─────────────────────────┐
 │            ▼                 ▼                         │
 │                   Ingress Layer                         │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐     │
-│  │ 302 重定向 │  │ DNS/GSLB │  │ Gateway 反向代理  │     │
+│  │ 302 Redirect│ │ DNS/GSLB │ │ Gateway Reverse Proxy│  │
 │  └─────┬────┘  └────┬─────┘  └────────┬─────────┘     │
 └────────┼────────────┼─────────────────┼────────────────┘
          │            │                 │
          ▼            ▼                 ▼
 ┌────────────────────────────────────────────────────────┐
-│               Control Plane (控制面)                     │
+│               Control Plane                             │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐               │
 │  │ Registry │ │ Scheduler│ │ Prober   │               │
-│  │ 注册/鉴权 │ │ Top-K 调度│ │ 可达性探活│               │
+│  │ Register  │ │ Top-K    │ │ Liveness │               │
+│  │ /Auth     │ │ Dispatch │ │ Probe    │               │
 │  └──────────┘ └──────────┘ └──────────┘               │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐               │
 │  │ Heartbeat│ │ Policy   │ │ Content  │               │
-│  │ 心跳/状态 │ │ 策略/限流 │ │ Index 索引│               │
+│  │ /Status  │ │ /RateLim │ │ Index    │               │
 │  └──────────┘ └──────────┘ └──────────┘               │
 └──────────────────────┬─────────────────────────────────┘
                        │
@@ -54,60 +55,60 @@
          ▼             ▼             ▼
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │  Edge Agent  │ │  Edge Agent  │ │  Edge (NAT)  │
-│  缓存/回源    │ │  缓存/回源    │ │  通过隧道服务  │
+│  Cache/Pull  │ │  Cache/Pull  │ │  via Tunnel  │
 └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
        │                │                │
        ▼                ▼                ▼
 ┌────────────────────────────────────────────────────────┐
-│                   Origin (源站)                         │
+│                   Origin Server                        │
 └────────────────────────────────────────────────────────┘
 ```
-### Web 管理控制台
+### Web Admin Console
 
-[Edge-Dispatch-Framework-Webmanager](https://github.com/im10furry/Edge-Dispatch-Framework-Webmanager) 是配套的 Web UI 管理面板，通过控制面 Admin API 提供可视化的节点管理、调度监控和数据展示。
+[Edge-Dispatch-Framework-Webmanager](https://github.com/im10furry/Edge-Dispatch-Framework-Webmanager) is the companion Web UI admin panel that provides visual node management, dispatch monitoring, and data presentation via the Control Plane Admin API.
 
 ```bash
-# 克隆并启动 Webmanager
+# Clone and start Webmanager
 git clone https://github.com/im10furry/Edge-Dispatch-Framework-Webmanager.git
 cd Edge-Dispatch-Framework-Webmanager
-# 详见项目 README
+# See the project README for details
 ```
 
 ---
 
-## 快速开始（本地演示）
+## Quick Start (Local Demo)
 
-适用于在**单台机器**上快速体验全部功能。
+For quickly experiencing all features on a **single machine**.
 
-### 前置条件
+### Prerequisites
 
 - Docker & Docker Compose
-- Go 1.22+（仅本地开发时需要）
+- Go 1.22+ (only needed for local development)
 
-### 一键启动
+### One-Click Start
 
 ```bash
 git clone https://github.com/DarkInno/Edge-Dispatch-Framework.git
 cd Edge-Dispatch-Framework
 
-# 启动全套服务（控制面 + 2 个边缘节点 + 网关 + 源站 + PG + Redis）
+# Start all services (Control Plane + 2 Edge Nodes + Gateway + Origin + PG + Redis)
 docker compose up -d
 
-# 等待服务就绪（约 15 秒）
+# Wait for services to be ready (~15 seconds)
 docker compose ps
 
-# 验证服务
-curl http://localhost:8080/healthz        # 控制面
-curl http://localhost:9090/healthz        # 边缘节点 1
-curl http://localhost:9091/healthz        # 边缘节点 2
-curl http://localhost:7070/healthz        # 源站
-curl http://localhost:8880/healthz        # 网关
+# Verify services
+curl http://localhost:8080/healthz        # Control Plane
+curl http://localhost:9090/healthz        # Edge Node 1
+curl http://localhost:9091/healthz        # Edge Node 2
+curl http://localhost:7070/healthz        # Origin
+curl http://localhost:8880/healthz        # Gateway
 ```
 
-### 测试 302 调度
+### Test 302 Dispatch
 
 ```bash
-# 1. 注册一个边缘节点
+# 1. Register an edge node
 curl -sS -X POST http://localhost:8080/v1/nodes/register \
   -H 'Content-Type: application/json' \
   -d '{
@@ -118,36 +119,36 @@ curl -sS -X POST http://localhost:8080/v1/nodes/register \
     "capabilities": {"inbound_reachable": true, "cache_disk_gb": 10, "max_uplink_mbps": 100}
   }'
 
-# 返回: {"node_id":"...","token":"..."}
-# 记下 node_id 和 token
+# Returns: {"node_id":"...","token":"..."}
+# Note the node_id and token
 
-# 2. 请求 302 重定向（控制面返回最优边缘节点地址）
+# 2. Request 302 redirect (Control Plane returns the best edge node address)
 curl -sS -I http://localhost:8080/obj/test-file.bin
 
-# 3. 直接请求边缘节点（带 token）
+# 3. Direct request to edge node (with token)
 curl -sS http://localhost:9090/obj/test-file.bin?token=<token_from_step_1>
 ```
 
 ---
 
-## 部署指南
+## Deployment Guide
 
-> 生产环境中，**控制面是中心化服务**（部署在一台/多台中心服务器），**边缘节点是分布式服务**（部署在各区域的边缘服务器上），二者使用不同的 compose 文件。
+> In production, the **Control Plane is a centralized service** (deployed on one or more central servers), while **Edge Nodes are distributed services** (deployed on edge servers in each region). They use separate compose files.
 
-### 部署架构
+### Deployment Architecture
 
 ```
                           ┌─────────────────────────────┐
-                          │    Control Plane (中心节点)    │
+                          │    Control Plane (Central)    │
                           │  ┌──────────┐ ┌──────────┐  │
                           │  │ Postgres │ │  Redis   │  │
                           │  └──────────┘ └──────────┘  │
                           │  ┌──────────┐ ┌──────────┐  │
                           │  │Control   │ │ Gateway  │  │
-                          │  │ Plane    │ │ (可选)    │  │
+                          │  │ Plane    │ │ (optional)│  │
                           │  └──────────┘ └──────────┘  │
                           │  ┌──────────┐               │
-                          │  │ DNS      │ (可选)         │
+                          │  │ DNS      │ (optional)    │
                           │  │ Adapter  │               │
                           │  └──────────┘               │
                           └──────┬──────────────────────┘
@@ -156,7 +157,7 @@ curl -sS http://localhost:9090/obj/test-file.bin?token=<token_from_step_1>
               ▼                  ▼                  ▼
     ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
     │   Edge Agent 1  │ │   Edge Agent 2  │ │   Edge Agent N  │
-    │   (区域 A)       │ │   (区域 B)       │ │   (区域 ...)     │
+    │   (Region A)    │ │   (Region B)    │ │   (Region ...)  │
     │   docker-compose │ │   docker-compose │ │   docker-compose │
     │   .edge.yml      │ │   .edge.yml      │ │   .edge.yml      │
     └────────┬────────┘ └────────┬────────┘ └────────┬────────┘
@@ -164,145 +165,151 @@ curl -sS http://localhost:9090/obj/test-file.bin?token=<token_from_step_1>
              └───────────────────┼───────────────────┘
                                  ▼
                       ┌─────────────────┐
-                      │  Origin (源站)   │
-                      │  (独立部署)      │
+                      │  Origin Server   │
+                      │  (standalone)    │
                       └─────────────────┘
 ```
 
-**关键区别：**
-- **控制面**：集中部署，管理节点注册、调度、心跳。边缘节点通过 HTTP 连接控制面。
-- **边缘节点**：分布式部署，靠近用户。与控制面不在同一个 Docker 网络中，通过公网/内网 IP 通信。
+**Key differences:**
+- **Control Plane**: Centralized deployment, manages node registration, scheduling, and heartbeats. Edge nodes connect to the Control Plane via HTTP.
+- **Edge Nodes**: Distributed deployment, close to users. Not in the same Docker network as the Control Plane; communicate via public/private IP.
 
-### 前置条件
+### Prerequisites
 
-- 控制面服务器：Docker & Docker Compose，至少 2GB 内存
-- 边缘节点服务器：Docker & Docker Compose（不需要 Go 环境，使用 Docker 构建或预构建镜像）
-- 网络：边缘节点服务器需要能够通过 HTTP 访问控制面的 `8080` 端口
+- Control Plane server: Docker & Docker Compose, at least 2GB RAM
+- Edge Node server: Docker & Docker Compose (no Go environment needed, use Docker build or pre-built images)
+- Network: Edge Node servers must be able to reach the Control Plane's `8080` port via HTTP
 
-### 安全准备
+### Security Preparation
 
-生产部署**必须**替换默认密钥，否则服务会拒绝启动：
+Production deployments **must** replace default secrets, or services will refuse to start:
 
 ```bash
-# 生成强随机密钥
+# Generate a strong random secret
 openssl rand -base64 32
 ```
 
-在控制面服务器上创建 `.env` 文件：
+Create a `.env` file on the Control Plane server:
 
 ```bash
-# .env (放在与控制面 compose 文件同目录)
-CP_TOKEN_SECRET=<生成的随机密钥>
-GW_AUTH_TOKEN=<生成的随机密钥>
-PG_PASSWORD=<数据库密码>
+# .env (place in the same directory as the Control Plane compose file)
+CP_TOKEN_SECRET=<generated-random-secret>
+GW_AUTH_TOKEN=<generated-random-secret>
+GW_CP_TOKEN=<generated-random-secret>
+PG_PASSWORD=<database-password>
+
+# Required if Admin API is enabled
+CP_ADMIN_JWT_SECRET=<generated-random-secret>
+CP_ADMIN_ACCESS_KEY=<generated-access-key>
+CP_ADMIN_SECRET_KEY=<generated-secret-key>
 ```
 
 ---
 
-### 方式一：单机演示（All-in-One）
+### Method 1: Single-Machine Demo (All-in-One)
 
-在一台机器上体验全部功能。控制面和边缘节点在同一个 Docker 网络中。
+Experience all features on a single machine. Control Plane and Edge Nodes share the same Docker network.
 
 ```bash
 docker compose up -d
 ```
 
-> 这是 `docker-compose.yml` 的模式，仅用于本地开发和功能验证。
+> This is the `docker-compose.yml` mode, intended for local development and feature verification only.
 
 ---
 
-### 方式二：分离部署（生产推荐）
+### Method 2: Split Deployment (Production Recommended)
 
-#### 第一步：部署控制面
+#### Step 1: Deploy Control Plane
 
-在中心服务器上：
+On the central server:
 
 ```bash
 git clone https://github.com/DarkInno/Edge-Dispatch-Framework.git
 cd Edge-Dispatch-Framework
 
-# 创建 .env 配置
+# Create .env configuration
 cat > .env << 'EOF'
 CP_TOKEN_SECRET=<your-random-secret>
 GW_AUTH_TOKEN=<your-random-token>
 PG_PASSWORD=<your-pg-password>
 EOF
 
-# 启动控制面核心服务
+# Start core Control Plane services
 docker compose -f docker-compose.cp.yml up -d
 
-# 如果需要 Gateway 反向代理:
+# If you need the Gateway reverse proxy:
 docker compose -f docker-compose.cp.yml --profile gateway up -d
 
-# 如果需要 DNS 适配器:
+# If you need the DNS adapter:
 docker compose -f docker-compose.cp.yml --profile dns up -d
 
-# 启动全部可选组件:
+# Start all optional components:
 docker compose -f docker-compose.cp.yml --profile full up -d
 
-# 验证
+# Verify
 curl http://localhost:8080/healthz
 ```
 
-控制面默认端口：
-| 服务 | 端口 | 说明 |
+Control Plane default ports:
+| Service | Port | Description |
 |------|------|------|
-| control-plane | 8080/tcp | 控制面 API（边缘节点通过此端口通信） |
-| gateway | 8880/tcp | HTTP 反向代理（可选） |
-| gateway-tunnel | 7700/tcp | 反向隧道服务（可选，NAT 节点需要） |
-| dns-adapter | 53/udp | DNS 权威服务器（可选） |
-| postgres | 5432/tcp | 数据库 |
-| redis | 6379/tcp | 缓存 |
+| control-plane | 8080/tcp | Control Plane API (edge nodes communicate via this port) |
+| gateway | 8880/tcp | HTTP reverse proxy (optional) |
+| gateway-tunnel | 7700/tcp | Reverse tunnel service (optional, needed for NAT nodes) |
+| dns-adapter | 53/udp | DNS authoritative server (optional) |
+| postgres | 5432/tcp | Database |
+| redis | 6379/tcp | Cache |
 
-> 开放防火墙：边缘节点需要能访问控制面的 **8080** 端口。
+> Open firewall: Edge nodes must be able to reach the Control Plane's **8080** port.
 
-#### 第二步：部署边缘节点
+#### Step 2: Deploy Edge Nodes
 
-在**每台边缘服务器**上：
+On **each edge server**:
 
 ```bash
 git clone https://github.com/DarkInno/Edge-Dispatch-Framework.git
 cd Edge-Dispatch-Framework
 
-# 创建 .env 配置
+# Create .env configuration
 cat > .env << 'EOF'
-# 必填：控制面地址（替换为实际 IP/域名）
+# Required: Control Plane address (replace with actual IP/domain)
 EA_CONTROL_PLANE_URL=http://<cp-public-ip>:8080
 
-# 必填：源站地址（缓存未命中时回源）
+# Required: Origin server address (pull from origin on cache miss)
 EA_ORIGIN_URL=http://<origin-ip>:7070
 
-# 可选：缓存配置
+# Optional: Cache configuration
 EA_CACHE_MAX_GB=100
 EA_CACHE_DIR=/data/edf-cache
 EOF
 
-# 启动边缘节点
+# Start the edge node
 docker compose -f docker-compose.edge.yml up -d
 
-# 查看日志
+# View logs
 docker compose -f docker-compose.edge.yml logs -f
 
-# 验证
+# Verify
 curl http://localhost:9090/healthz
 ```
 
-**NAT 节点** — 节点在 NAT 后无公网 IP 时使用隧道模式：
+**NAT Nodes** — use tunnel mode when a node is behind NAT without a public IP:
 
-在 `.env` 中添加：
+Add to `.env`:
 ```bash
 EA_NAT_MODE=true
 EA_TUNNEL_SERVER_ADDR=<gateway-host>:7700
 EA_TUNNEL_AUTH_TOKEN=<gw-auth-token>
 ```
 
-#### 第三步：注册边缘节点到控制面
+#### Step 3: Register Edge Node with Control Plane
 
-边缘节点启动后，通过边缘节点的自动注册或手动 API 将其注册到控制面：
+After the edge node starts, register it with the Control Plane via auto-registration or the manual API:
 
-**自动注册**：边缘节点首次启动时，如果没有 `EA_NODE_TOKEN`，会自动调用控制面的注册 API。
+**Auto-registration**: When an edge node starts for the first time without `EA_NODE_TOKEN`, it automatically calls the Control Plane's registration API.
 
-**手动注册**：
+**Manual registration**:
 ```bash
 curl -X POST http://<cp-host>:8080/v1/nodes/register \
   -H 'Content-Type: application/json' \
@@ -319,19 +326,19 @@ curl -X POST http://<cp-host>:8080/v1/nodes/register \
   }'
 ```
 
-> 返回的 `token` 需要记录下来，后续可以配置到边缘节点的 `EA_NODE_TOKEN` 环境变量中以保持身份。
+> Record the returned `token` — it can be configured as the `EA_NODE_TOKEN` environment variable on the edge node to persist its identity.
 
-#### 第四步：验证调度
+#### Step 4: Verify Dispatch
 
 ```bash
-# 通过控制面 302 重定向获取最优边缘节点
+# Get the best edge node via Control Plane 302 redirect
 curl -sS -I http://<cp-host>:8080/obj/test-file.bin
 
-# 输出:
+# Output:
 # HTTP/1.1 302 Found
 # Location: http://<edge-ip>:9090/obj/test-file.bin?token=...
 
-# 通过 API 获取 Top-K 候选节点
+# Get Top-K candidate nodes via API
 curl -sS -X POST http://<cp-host>:8080/v1/dispatch/resolve \
   -H 'Content-Type: application/json' \
   -d '{
@@ -340,9 +347,9 @@ curl -sS -X POST http://<cp-host>:8080/v1/dispatch/resolve \
   }'
 ```
 
-#### 第五步：部署示例源站（可选）
+#### Step 5: Deploy Example Origin (Optional)
 
-本项目的 `origin` 服务是一个示例源站。生产环境中通常替换为已有的对象存储（S3/OSS）或 CDN 源站。
+The `origin` service in this project is an example origin server. In production, replace it with your existing object storage (S3/OSS) or CDN origin.
 
 ```bash
 docker compose -f docker-compose.edge.yml --profile origin up -d
@@ -350,22 +357,22 @@ docker compose -f docker-compose.edge.yml --profile origin up -d
 
 ---
 
-### 部署多节点（单机测试）
+### Multi-Node Deployment (Single-Machine Testing)
 
-在单台机器上模拟多个边缘节点用于测试：
+Simulate multiple edge nodes on a single machine for testing:
 
 ```bash
-# 节点 1
+# Node 1
 EA_CONTROL_PLANE_URL=http://localhost:8080 \
 EA_CACHE_DIR=/tmp/edf-cache-1 \
 docker compose -f docker-compose.edge.yml -p edge1 up -d
 
-# 节点 2 (使用不同端口和缓存目录)
+# Node 2 (different port and cache directory)
 EA_CONTROL_PLANE_URL=http://localhost:8080 \
 EA_CACHE_DIR=/tmp/edf-cache-2 \
 docker compose -f docker-compose.edge.yml -p edge2 up -d
 
-# 手动指定端口映射
+# Manual port mapping
 docker run -d --name edge3 \
   -e EA_LISTEN_ADDR=:9092 \
   -e EA_CONTROL_PLANE_URL=http://host.docker.internal:8080 \
@@ -377,191 +384,217 @@ docker run -d --name edge3 \
 
 ---
 
-### 使用预构建镜像
+### Using Pre-built Images
 
-生产环境中建议先构建镜像并推送到私有 Registry，边缘节点直接拉取镜像：
+In production, build images first and push them to a private registry, then edge nodes pull images directly:
 
 ```bash
-# 在构建机上:
+# On the build machine:
 docker compose -f docker-compose.edge.yml build
 docker tag edf-edge-agent your-registry/edf-edge-agent:latest
 docker push your-registry/edf-edge-agent:latest
 
-# 在边缘节点上，修改 docker-compose.edge.yml 将 build: 替换为 image::
+# On edge nodes, edit docker-compose.edge.yml to replace `build:` with `image:`:
 #   image: your-registry/edf-edge-agent:latest
 ```
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```
 .
-├── cmd/                          # 服务入口
-│   ├── control-plane/            # 控制面
-│   ├── edge-agent/               # 边缘节点
-│   ├── gateway/                  # 网关反代（v0.3）
-│   ├── dns-adapter/              # DNS/GSLB 适配器（v0.2）
-│   ├── origin/                   # 示例源站
-│   └── stress/                   # 压力测试工具
-├── internal/                     # 核心库
-│   ├── auth/                     # HMAC Token 签名/验证
-│   ├── config/                   # 环境变量配置加载
-│   ├── contentindex/             # 内容索引（Bloom Filter + 热内容）
-│   ├── controlplane/             # 控制面核心（API、调度、心跳、探活、策略）
-│   ├── dns/                      # DNS/GSLB 适配器
-│   ├── edgeagent/                # 边缘节点（缓存、回源、上报）
-│   ├── gateway/                  # 网关反向代理
-│   ├── metrics/                  # Prometheus 指标（v0.5）
-│   ├── models/                   # 共享数据模型
-│   ├── quic/                     # HTTP/3 QUIC（占位）
-│   ├── store/                    # PostgreSQL + Redis 存储层
-│   ├── streaming/                # HLS/DASH 流媒体支持（v0.4）
-│   └── tunnel/                   # 反向隧道协议（v0.3）
-├── docker/                       # Dockerfile
-├── docker-compose.yml            # 本地演示（All-in-One）
-├── docker-compose.cp.yml         # 控制面部署（生产用）
-├── docker-compose.edge.yml       # 边缘节点部署（生产用）
-├── Makefile                      # 构建/测试/部署命令
-└── requirements.md               # 产品需求文档（PRD）
+├── cmd/                          # Service entry points
+│   ├── control-plane/            # Control Plane
+│   ├── edge-agent/               # Edge Node
+│   ├── gateway/                  # Gateway Reverse Proxy (v0.3)
+│   ├── dns-adapter/              # DNS/GSLB Adapter (v0.2)
+│   ├── origin/                   # Example Origin Server
+│   └── stress/                   # Stress Testing Tool
+├── internal/                     # Core libraries
+│   ├── auth/                     # HMAC Token sign/verify
+│   ├── config/                   # Environment variable config loading
+│   ├── contentindex/             # Content Index (Bloom Filter + hot content)
+│   ├── controlplane/             # Control Plane core (API, scheduler, heartbeat, probe, policy)
+│   ├── dns/                      # DNS/GSLB Adapter
+│   ├── edgeagent/                # Edge Node (cache, origin pull, reporting)
+│   ├── gateway/                  # Gateway Reverse Proxy
+│   ├── metrics/                  # Prometheus Metrics (v0.5)
+│   ├── models/                   # Shared data models
+│   ├── quic/                     # HTTP/3 QUIC (placeholder)
+│   ├── store/                    # PostgreSQL + Redis storage layer
+│   ├── streaming/                # HLS/DASH streaming support (v0.4)
+│   └── tunnel/                   # Reverse Tunnel Protocol (v0.3)
+├── docker/                       # Dockerfiles
+├── Dockerfile                    # Root Dockerfile (multi-stage build)
+├── docker-compose.yml            # Local demo (All-in-One)
+├── docker-compose.cp.yml         # Control Plane deployment (production)
+├── docker-compose.edge.yml       # Edge Node deployment (production)
+├── .dockerignore                 # Docker build exclusion rules
+├── Makefile                      # Build/test/deploy commands
+├── openapi.json                  # OpenAPI 3.0 specification
+└── requirements.md               # Product Requirements Document (PRD)
 ```
 
-## 配置参考
+## Configuration Reference
 
-所有服务通过环境变量配置，参见 `internal/config/config.go`。
+All services are configured via environment variables. See `internal/config/config.go`.
 
-### 控制面（Control Plane）
+### Control Plane
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 |------|--------|------|
-| `CP_LISTEN_ADDR` | `:8080` | 监听地址（边缘节点通过此端口通信） |
-| `CP_PG_URL` | — | PostgreSQL 连接串 |
-| `CP_REDIS_ADDR` | `localhost:6379` | Redis 地址 |
-| `CP_TOKEN_SECRET` | — | HMAC Token 密钥（**生产必须设置**） |
-| `CP_MAX_CANDIDATES` | `5` | 调度返回的最大候选数 |
-| `CP_DEFAULT_TTL_MS` | `30000` | 候选 TTL（毫秒） |
-| `CP_DEGRADE_TO_ORIGIN` | `true` | 无可用节点时降级到源站 |
-| `CP_PROBE_INTERVAL` | `10s` | 节点可达性探测间隔 |
-| `CP_PROBE_TIMEOUT` | `5s` | 探测超时 |
-| `CP_HEARTBEAT_TTL` | `30s` | 心跳超时（超过则标记下线） |
-| `CP_CI_HOT_KEY_TTL` | `5m` | 热键 TTL |
+| `CP_LISTEN_ADDR` | `:8080` | Listen address (edge nodes communicate via this port) |
+| `CP_PG_URL` | — | PostgreSQL connection string |
+| `CP_REDIS_ADDR` | `localhost:6379` | Redis address |
+| `CP_TOKEN_SECRET` | — | HMAC Token secret (**must set in production**) |
+| `CP_MAX_CANDIDATES` | `5` | Max candidates returned by scheduler |
+| `CP_DEFAULT_TTL_MS` | `30000` | Candidate TTL (milliseconds) |
+| `CP_DEGRADE_TO_ORIGIN` | `true` | Degrade to origin when no nodes available |
+| `CP_PROBE_INTERVAL` | `10s` | Node reachability probe interval |
+| `CP_PROBE_TIMEOUT` | `5s` | Probe timeout |
+| `CP_HEARTBEAT_TTL` | `30s` | Heartbeat timeout (node marked offline if exceeded) |
+| `CP_CI_HOT_KEY_TTL` | `5m` | Hot key TTL |
+| `CP_ADMIN_ENABLED` | `false` | Enable Admin API |
+| `CP_ADMIN_ACCESS_KEY` | — | Admin API access key |
+| `CP_ADMIN_SECRET_KEY` | — | Admin API secret key |
+| `CP_ADMIN_JWT_SECRET` | — | JWT signing secret (**required if Admin API enabled**) |
+| `CP_ADMIN_JWT_EXPIRY` | `3600` | JWT expiry in seconds |
 
-### 边缘节点（Edge Agent）
+### Edge Agent
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 |------|--------|------|
-| `EA_LISTEN_ADDR` | `:9090` | 监听地址 |
-| `EA_CONTROL_PLANE_URL` | — | 控制面地址（**必填**） |
-| `EA_ORIGIN_URL` | — | 源站地址（**必填**） |
-| `EA_NODE_TOKEN` | — | 节点身份 Token（首次自动注册） |
-| `EA_CACHE_DIR` | `/tmp/edf-cache` | 缓存目录 |
-| `EA_CACHE_MAX_GB` | `10` | 最大缓存容量（GB） |
-| `EA_HEARTBEAT_INTERVAL` | `10s` | 心跳上报间隔 |
-| `EA_NAT_MODE` | `false` | NAT 模式（通过隧道连接） |
-| `EA_TUNNEL_SERVER_ADDR` | — | 隧道服务器地址 |
+| `EA_LISTEN_ADDR` | `:9090` | Listen address |
+| `EA_CONTROL_PLANE_URL` | — | Control Plane address (**required**) |
+| `EA_ORIGIN_URL` | — | Origin server address (**required**) |
+| `EA_NODE_TOKEN` | — | Node identity token (auto-register on first start) |
+| `EA_CACHE_DIR` | `/tmp/edf-cache` | Cache directory |
+| `EA_CACHE_MAX_GB` | `10` | Max cache capacity (GB) |
+| `EA_HEARTBEAT_INTERVAL` | `10s` | Heartbeat report interval |
+| `EA_NAT_MODE` | `false` | NAT mode (connect via tunnel) |
+| `EA_TUNNEL_SERVER_ADDR` | — | Tunnel server address |
+| `EA_QUIC_ENABLED` | `false` | Enable HTTP/3 QUIC (v0.6) |
+| `EA_QUIC_LISTEN_ADDR` | `:9443` | HTTP/3 QUIC listen address |
 
-### 网关（Gateway）
+### Gateway
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 |------|--------|------|
-| `GW_LISTEN_ADDR` | `:8880` | HTTP 代理监听地址 |
-| `GW_TUNNEL_ADDR` | `:7700` | 隧道服务监听地址 |
-| `GW_CONTROL_PLANE_URL` | — | 控制面地址 |
-| `GW_AUTH_TOKEN` | — | 隧道认证 Token（**生产必须设置**） |
+| `GW_LISTEN_ADDR` | `:8880` | HTTP proxy listen address |
+| `GW_TUNNEL_ADDR` | `:7700` | Tunnel service listen address |
+| `GW_CONTROL_PLANE_URL` | — | Control Plane address |
+| `GW_AUTH_TOKEN` | — | Tunnel auth token (**must set in production**) |
+| `GW_CP_TOKEN` | — | Control Plane API auth token (**must set in production**) |
+| `GW_QUIC_ENABLED` | `false` | Enable HTTP/3 QUIC (v0.6) |
+| `GW_QUIC_LISTEN_ADDR` | `:9443` | HTTP/3 QUIC listen address |
 
-### DNS 适配器
+### DNS Adapter
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Description |
 |------|--------|------|
-| `DNS_LISTEN_ADDR` | `:5353` | UDP DNS 监听地址 |
-| `DNS_DOMAIN` | `edge.local` | 调度域名后缀 |
-| `DNS_TTL_SECONDS` | `30` | DNS 响应 TTL |
+| `DNS_LISTEN_ADDR` | `:5353` | UDP DNS listen address |
+| `DNS_DOMAIN` | `edge.local` | Dispatch domain suffix |
+| `DNS_TTL_SECONDS` | `30` | DNS response TTL |
+| `DNS_TOKEN_SECRET` | — | HMAC token secret (**must set in production, v0.5+**) |
+| `DNS_CONTENT_AWARE_SCORE` | `25.0` | Content-aware routing score weight |
 
-## API 接口
+## API Reference
 
-### 节点 API
-
-```
-POST /v1/nodes/register          # 节点注册
-POST /v1/nodes/heartbeat         # 心跳上报
-GET  /v1/nodes/{nodeID}          # 查询节点
-DELETE /v1/nodes/{nodeID}        # 吊销节点
-```
-
-### 调度 API
+### Node API
 
 ```
-POST /v1/dispatch/resolve        # 纯 API 调度（返回 Top-K 候选）
-GET  /obj/{key}                  # 302 入口（重定向到最优边缘节点）
+POST /v1/nodes/register          # Register node
+POST /v1/nodes/heartbeat         # Report heartbeat
+GET  /v1/nodes/{nodeID}          # Query node
+DELETE /v1/nodes/{nodeID}        # Revoke node
 ```
 
-### 其他
+### Dispatch API
 
 ```
-GET  /healthz                    # 健康检查
-GET  /metrics                    # Prometheus 指标（控制面/网关/边缘节点）
+POST /v1/dispatch/resolve        # Pure API dispatch (returns Top-K candidates)
+GET  /obj/{key}                  # 302 entry point (redirect to best edge node)
 ```
 
-## 开发
+### Admin API (v0.5+)
+
+Requires authentication via Access Key + HMAC signature. Enabled via `CP_ADMIN_ENABLED=true`.
+
+```
+POST /internal/admin/v1/nodes/{nodeID}:disable   # Disable a node
+POST /internal/admin/v1/nodes/{nodeID}:enable    # Enable a node
+POST /internal/admin/v1/nodes/{nodeID}:revoke    # Revoke a node
+```
+
+### Other
+
+```
+GET  /healthz                    # Health check
+GET  /metrics                    # Prometheus metrics (Control Plane / Gateway / Edge Node)
+```
+
+## Development
 
 ```bash
-# 构建所有服务
+# Build all services
 make build
 
-# 运行测试
+# Run tests
 make test
 
-# 运行测试（含竞态检测）
+# Run tests (with race detection)
 make test-race
 
-# 查看测试覆盖率
+# View test coverage
 make test-cover
 
-# 运行 benchmark
+# Run benchmarks
 make bench
 
-# 集成测试（需要 Docker）
+# Integration tests (requires Docker)
 make integration-test
 
-# 代码检查
+# Code linting
 make lint
 ```
 
-### 压力测试
+### Stress Testing
 
 ```bash
-# 调度 API 压测
+# Dispatch API stress test
 make stress-dispatch
 
-# 源站直连压测
+# Direct origin stress test
 make stress-direct
 
-# 边缘节点缓存压测
+# Edge node cache stress test
 make stress-bench-edge
 
-# 网关代理压测
+# Gateway proxy stress test
 make stress-gateway
 ```
 
-## 文档
+## Documentation
 
-| 文档 | 说明 |
+| Document | Description |
 |------|------|
-| [更新日志](CHANGELOG.md) | 按版本记录的新增、修复、变更 |
-| [贡献指南](CONTRIBUTING.md) | 开发流程、代码规范、提交规范 |
+| [Changelog](CHANGELOG.md) | Additions, fixes, and changes by version |
+| [Contributing](CONTRIBUTING.md) | Development workflow, code standards, commit conventions |
+| [OpenAPI Spec](openapi.json) | OpenAPI 3.0 API specification |
 
 ## Roadmap
 
-- [x] **v0.1** — 控制面 + 边缘节点 + 302 调度 + Range 支持
-- [x] **v0.2** — 内容索引（Bloom Filter）+ DNS/GSLB 适配器
-- [x] **v0.3** — 网关反代 + 反向隧道（NAT 节点支持）
-- [x] **v0.4** — HLS/DASH 流媒体 + 滑动窗口缓存 + 预取
-- [x] **v0.5** — Prometheus 指标、热键 TTL 清理、Bug 修复（v0.1~v0.3）
-- [ ] **v0.6** — HTTP/3 QUIC、Helm Chart 部署
+- [x] **v0.1** — Control Plane + Edge Node + 302 Dispatch + Range support
+- [x] **v0.2** — Content Index (Bloom Filter) + DNS/GSLB Adapter
+- [x] **v0.3** — Gateway Reverse Proxy + Reverse Tunnel (NAT node support)
+- [x] **v0.4** — HLS/DASH Streaming + Sliding-window Cache + Prefetch
+- [x] **v0.5** — Prometheus Metrics, Hot Key TTL Cleanup, Bug Fixes (v0.1~v0.3)
+- [ ] **v0.6** — HTTP/3 QUIC (config + partial impl), Helm Chart Deployment
 
-## 贡献
+## Contributing
 
-欢迎贡献！请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 ## License
 

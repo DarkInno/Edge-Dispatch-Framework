@@ -3,9 +3,13 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /gateway ./cmd/gateway
+RUN CGO_ENABLED=0 GOOS=linux go build -tags quic -o /gateway ./cmd/gateway
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
+RUN adduser -D -g '' appuser
 COPY --from=builder /gateway /usr/local/bin/gateway
+EXPOSE 8880 7700
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://localhost:8880/healthz || exit 1
+USER appuser
 ENTRYPOINT ["gateway"]

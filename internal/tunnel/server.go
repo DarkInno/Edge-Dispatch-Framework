@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -141,8 +142,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Validate registration
-	if s.cfg.AuthToken != "" && reg.NodeToken != s.cfg.AuthToken {
+	// Validate registration using constant-time comparison
+	if s.cfg.AuthToken != "" && subtle.ConstantTimeCompare([]byte(reg.NodeToken), []byte(s.cfg.AuthToken)) != 1 {
 		s.sendError(conn, 0, "invalid token")
 		return
 	}
@@ -404,7 +405,7 @@ func (s *Server) HTTPHandler() http.Handler {
 		respHeader, bodyReader, err := s.ForwardRequest(nodeID, reqHeader, r.Body)
 		if err != nil {
 			s.logger.Error("tunnel forward failed", "err", err, "node_id", nodeID)
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			http.Error(w, "tunnel request failed", http.StatusBadGateway)
 			return
 		}
 

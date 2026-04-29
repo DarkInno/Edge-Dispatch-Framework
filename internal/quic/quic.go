@@ -1,23 +1,24 @@
-// Package quic provides an optional HTTP/3 listening scaffold (v0.4).
-// To enable HTTP/3, import "github.com/quic-go/quic-go/http3" and
-// construct an http3.Server in place of net/http.Server.
+// Package quic provides optional HTTP/3 support via quic-go.
 //
-// Example usage:
+// Import "github.com/quic-go/quic-go/http3" and build with -tags quic
+// to enable HTTP/3 listeners on gateway and edge agent services.
 //
-//	import "github.com/quic-go/quic-go/http3"
+// Without the quic build tag, Server and Client are no-ops.
 //
-//	ln, _ := quic.ListenAddr(listenAddr, tlsConf, nil)
-//	srv := &http3.Server{Handler: mux, TLSConfig: tlsConf}
-//	srv.Serve(ln)
+// Example:
 //
-// For production QUIC, ensure cert rotation, 0-RTT safety, and concurrency
-// tuning (set GOMAXPROCS appropriately for UDP receive).
-//
-// Enable via build tag: go build -tags quic ./...
+//	cfg := quic.ServerConfig{
+//	    Addr:      ":9443",
+//	    Handler:   mux,
+//	    TLSConfig: tlsCfg,
+//	}
+//	srv := quic.NewServer(cfg)
+//	go srv.ListenAndServe()
 package quic
 
-// Enabled reports whether the quic build tag is active.
-var Enabled = false
+// Enabled reports whether HTTP/3 support is available.
+// Set to true by init() in withquic.go when built with -tags quic.
+var Enabled bool
 
-// ListenAddr returns the QUIC listen address override.
-const ListenAddr = ":9443"
+// DefaultListenAddr is the default QUIC listen address.
+const DefaultListenAddr = ":9443"

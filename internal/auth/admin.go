@@ -29,6 +29,7 @@ type NonceCache struct {
 	mu     sync.Mutex
 	cache  map[string]time.Time
 	maxAge time.Duration
+	stopCh chan struct{}
 }
 
 // NewNonceCache creates a new nonce cache.
@@ -36,6 +37,7 @@ func NewNonceCache(maxAge time.Duration) *NonceCache {
 	nc := &NonceCache{
 		cache:  make(map[string]time.Time),
 		maxAge: maxAge,
+		stopCh: make(chan struct{}),
 	}
 	go nc.cleanupLoop()
 	return nc
@@ -44,16 +46,26 @@ func NewNonceCache(maxAge time.Duration) *NonceCache {
 func (nc *NonceCache) cleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		nc.mu.Lock()
-		now := time.Now()
-		for k, v := range nc.cache {
-			if now.Sub(v) > nc.maxAge {
-				delete(nc.cache, k)
+	for {
+		select {
+		case <-nc.stopCh:
+			return
+		case <-ticker.C:
+			nc.mu.Lock()
+			now := time.Now()
+			for k, v := range nc.cache {
+				if now.Sub(v) > nc.maxAge {
+					delete(nc.cache, k)
+				}
 			}
+			nc.mu.Unlock()
 		}
-		nc.mu.Unlock()
 	}
+}
+
+// Close stops the cleanup goroutine.
+func (nc *NonceCache) Close() {
+	close(nc.stopCh)
 }
 
 func (nc *NonceCache) CheckAndStore(nonce string) bool {
@@ -158,7 +170,7 @@ func (a *AdminAuth) Middleware(nonceCache *NonceCache) func(http.Handler) http.H
 			if err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":{"code":"ADMIN_UNAUTHORIZED","message":"admin auth failed: ` + err.Error() + `"}}`))
+				w.Write([]byte(`{"error":{"code":"ADMIN_UNAUTHORIZED","message":"authentication failed"}}`))
 				return
 			}
 			next.ServeHTTP(w, r)

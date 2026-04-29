@@ -18,12 +18,15 @@ services:
       dockerfile: docker/Dockerfile.edge-agent
     ports:
       - "9090:9090"
+      - "9443:9443/udp"  # HTTP/3 QUIC
     environment:
       EA_LISTEN_ADDR: ":9090"
       EA_CONTROL_PLANE_URL: "${EA_CONTROL_PLANE_URL:-http://localhost:8080}"
       EA_CACHE_DIR: "${EA_CACHE_DIR:-/tmp/edf-cache}"
       EA_CACHE_MAX_GB: "${EA_CACHE_MAX_GB:-10}"
       EA_ORIGIN_URL: "${EA_ORIGIN_URL:-http://localhost:7070}"
+      EA_QUIC_ENABLED: "${EA_QUIC_ENABLED:-true}"
+      EA_QUIC_LISTEN_ADDR: "${EA_QUIC_LISTEN_ADDR:-:9443}"
       # NAT 模式（可选）:
       # EA_NAT_MODE: "${EA_NAT_MODE:-false}"
       # EA_TUNNEL_SERVER_ADDR: "${EA_TUNNEL_SERVER_ADDR:-}"

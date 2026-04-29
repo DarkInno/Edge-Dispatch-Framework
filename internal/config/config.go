@@ -17,6 +17,12 @@ type Config struct {
 	Gateway      GatewayConfig
 }
 
+// QuicConfig holds HTTP/3 QUIC configuration (v0.6).
+type QuicConfig struct {
+	Enabled    bool
+	ListenAddr string
+}
+
 // GatewayConfig holds gateway configuration (v0.3).
 type GatewayConfig struct {
 	ListenAddr      string
@@ -27,6 +33,7 @@ type GatewayConfig struct {
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
 	IdleTimeout     time.Duration
+	Quic            QuicConfig
 }
 
 // ControlPlaneConfig holds control plane specific configuration.
@@ -70,6 +77,8 @@ type EdgeAgentConfig struct {
 	TunnelAuthToken  string // Token for tunnel authentication
 	// Streaming support (v0.4)
 	Streaming        *StreamingConfig
+	// HTTP/3 QUIC support (v0.6)
+	Quic             QuicConfig
 }
 
 // OriginConfig holds origin server configuration.
@@ -191,6 +200,11 @@ func LoadEdgeAgent() *EdgeAgentConfig {
 		TunnelAuthToken:  getEnv("EA_TUNNEL_AUTH_TOKEN", ""),
 		// Streaming support (v0.4)
 		Streaming: DefaultStreamingConfig(),
+		// HTTP/3 QUIC support (v0.6)
+		Quic: QuicConfig{
+			Enabled:    boolEnv("EA_QUIC_ENABLED", false),
+			ListenAddr: getEnv("EA_QUIC_LISTEN_ADDR", ":9443"),
+		},
 	}
 	cfg.warnDefaults()
 	return cfg
@@ -207,6 +221,10 @@ func LoadGateway() *GatewayConfig {
 		ReadTimeout:     durationEnv("GW_READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:    durationEnv("GW_WRITE_TIMEOUT", 60*time.Second),
 		IdleTimeout:     durationEnv("GW_IDLE_TIMEOUT", 120*time.Second),
+		Quic: QuicConfig{
+			Enabled:    boolEnv("GW_QUIC_ENABLED", false),
+			ListenAddr: getEnv("GW_QUIC_LISTEN_ADDR", ":9443"),
+		},
 	}
 	cfg.warnDefaults()
 	return cfg
@@ -286,7 +304,7 @@ func boolEnv(key string, defaultVal bool) bool {
 
 func (c *ControlPlaneConfig) warnDefaults() {
 	if c.TokenSecret == "change-me-in-production" {
-		slog.Error("FATAL: CP_TOKEN_SECRET is using the default value. Set a strong secret via CP_TOKEN_SECRET environment variable.", "default", c.TokenSecret)
+		slog.Error("FATAL: CP_TOKEN_SECRET is using the default value. Set a strong secret via CP_TOKEN_SECRET environment variable.")
 		fmt.Fprintln(os.Stderr, "FATAL: CP_TOKEN_SECRET must be set to a strong random secret. Refusing to start with default value.")
 		os.Exit(1)
 	}
@@ -294,7 +312,14 @@ func (c *ControlPlaneConfig) warnDefaults() {
 		slog.Warn("WARNING: PostgreSQL connection has SSL disabled (sslmode=disable). Enable TLS in production.")
 	}
 	if c.Admin.Enabled && c.Admin.JWTSecret == "" {
-		slog.Warn("WARNING: Admin API enabled but no JWT secret configured. JWT auth will be insecure.")
+		slog.Error("FATAL: Admin API enabled but no JWT secret configured. Set CP_ADMIN_JWT_SECRET. Refusing to start.")
+		fmt.Fprintln(os.Stderr, "FATAL: Admin API enabled but CP_ADMIN_JWT_SECRET is empty. Set a strong secret via CP_ADMIN_JWT_SECRET.")
+		os.Exit(1)
+	}
+	if c.Admin.Enabled && c.Admin.AdminAccessKey != "" && c.Admin.AdminSecretKey == "" {
+		slog.Error("FATAL: Admin access key set but no secret key configured. Set CP_ADMIN_SECRET_KEY.")
+		fmt.Fprintln(os.Stderr, "FATAL: CP_ADMIN_ACCESS_KEY is set but CP_ADMIN_SECRET_KEY is empty.")
+		os.Exit(1)
 	}
 }
 
@@ -309,8 +334,13 @@ func (c *EdgeAgentConfig) warnDefaults() {
 
 func (c *GatewayConfig) warnDefaults() {
 	if c.AuthToken == "change-me-in-production" {
-		slog.Error("FATAL: GW_AUTH_TOKEN is using the default value. Set a strong secret via GW_AUTH_TOKEN environment variable.", "default", c.AuthToken)
+		slog.Error("FATAL: GW_AUTH_TOKEN is using the default value. Set a strong secret via GW_AUTH_TOKEN environment variable.")
 		fmt.Fprintln(os.Stderr, "FATAL: GW_AUTH_TOKEN must be set to a strong random secret. Refusing to start with default value.")
+		os.Exit(1)
+	}
+	if c.CPToken == "change-me-in-production" {
+		slog.Error("FATAL: GW_CP_TOKEN is using the default value. Set a strong secret via GW_CP_TOKEN environment variable.")
+		fmt.Fprintln(os.Stderr, "FATAL: GW_CP_TOKEN must be set to a strong random secret. Refusing to start with default value.")
 		os.Exit(1)
 	}
 	if c.ControlPlaneURL != "" && !strings.Contains(c.ControlPlaneURL, "https") && !strings.HasPrefix(c.ControlPlaneURL, "http://localhost") {
@@ -320,7 +350,7 @@ func (c *GatewayConfig) warnDefaults() {
 
 // LoadDNSAdapter loads configuration for the DNS/GSLB adapter (v0.2+).
 func LoadDNSAdapter() *DNSAdapterConfig {
-	return &DNSAdapterConfig{
+	cfg := &DNSAdapterConfig{
 		ListenAddr:        getEnv("DNS_LISTEN_ADDR", ":5353"),
 		ControlPlaneURL:   getEnv("DNS_CONTROL_PLANE_URL", "http://localhost:8080"),
 		Domain:            getEnv("DNS_DOMAIN", "edge.local"),
@@ -328,6 +358,16 @@ func LoadDNSAdapter() *DNSAdapterConfig {
 		RefreshInterval:   durationEnv("DNS_REFRESH_INTERVAL", 10*time.Second),
 		TokenSecret:       getEnv("DNS_TOKEN_SECRET", "change-me-in-production"),
 		ContentAwareScore: floatEnv("DNS_CONTENT_AWARE_SCORE", 25.0),
+	}
+	cfg.warnDefaults()
+	return cfg
+}
+
+func (c *DNSAdapterConfig) warnDefaults() {
+	if c.TokenSecret == "change-me-in-production" {
+		slog.Error("FATAL: DNS_TOKEN_SECRET is using the default value. Set a strong secret via DNS_TOKEN_SECRET environment variable.")
+		fmt.Fprintln(os.Stderr, "FATAL: DNS_TOKEN_SECRET must be set to a strong random secret. Refusing to start with default value.")
+		os.Exit(1)
 	}
 }
 

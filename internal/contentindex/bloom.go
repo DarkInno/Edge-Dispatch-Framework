@@ -140,7 +140,7 @@ func optimalK(capacity int, m uint32) uint32 {
 // It tracks which nodes have which hot keys and a Bloom filter summary.
 type ContentIndex struct {
 	mu         sync.RWMutex
-	hotKeys    map[string][]string          // nodeID -> hot key list
+	hotKeys    map[string]map[string]struct{} // nodeID -> hot key set
 	blooms     map[string]*BloomFilter      // nodeID -> bloom filter
 	totalKeys  map[string]int64             // nodeID -> total cached keys
 }
@@ -148,7 +148,7 @@ type ContentIndex struct {
 // NewContentIndex creates an empty content index.
 func NewContentIndex() *ContentIndex {
 	return &ContentIndex{
-		hotKeys:   make(map[string][]string),
+		hotKeys:   make(map[string]map[string]struct{}),
 		blooms:    make(map[string]*BloomFilter),
 		totalKeys: make(map[string]int64),
 	}
@@ -160,7 +160,11 @@ func (ci *ContentIndex) Update(nodeID string, summary ContentSummaryData) {
 	defer ci.mu.Unlock()
 
 	if summary.HotKeys != nil {
-		ci.hotKeys[nodeID] = summary.HotKeys
+		set := make(map[string]struct{}, len(summary.HotKeys))
+		for _, k := range summary.HotKeys {
+			set[k] = struct{}{}
+		}
+		ci.hotKeys[nodeID] = set
 	}
 	if summary.BloomBytes != nil && summary.BloomK > 0 {
 		ci.blooms[nodeID] = NewBloomFilterFromBytes(summary.BloomBytes, summary.BloomK)
@@ -175,10 +179,8 @@ func (ci *ContentIndex) IsCached(nodeID, key string) (bool, bool) {
 	defer ci.mu.RUnlock()
 
 	if hotKeys, ok := ci.hotKeys[nodeID]; ok {
-		for _, hk := range hotKeys {
-			if hk == key {
-				return true, true
-			}
+		if _, found := hotKeys[key]; found {
+			return true, true
 		}
 	}
 
@@ -191,12 +193,24 @@ func (ci *ContentIndex) IsCached(nodeID, key string) (bool, bool) {
 	return false, false
 }
 
-// HasBloom returns whether a node has a bloom filter.
-func (ci *ContentIndex) HasBloom(nodeID string) bool {
+// FindNodesWithKey returns node IDs that have the given key in hot keys or bloom filters.
+func (ci *ContentIndex) FindNodesWithKey(key string) (hotNodes []string, bloomNodes []string) {
 	ci.mu.RLock()
 	defer ci.mu.RUnlock()
-	_, ok := ci.blooms[nodeID]
-	return ok
+
+	for nodeID, hotKeys := range ci.hotKeys {
+		if _, found := hotKeys[key]; found {
+			hotNodes = append(hotNodes, nodeID)
+		}
+	}
+
+	for nodeID, bf := range ci.blooms {
+		if bf.ContainsString(key) {
+			bloomNodes = append(bloomNodes, nodeID)
+		}
+	}
+
+	return hotNodes, bloomNodes
 }
 
 // RemoveNode removes all index data for a node.

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
@@ -163,6 +164,7 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 
 	r := chi.NewRouter()
 	rl := newRateLimiter(100000, 200000)
+	r.Use(middleware.Recoverer)
 	r.Use(withRateLimit(rl))
 	r.Use(withAPICOMmonHeaders)
 
@@ -179,14 +181,16 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 	if cfg.Admin.Enabled {
 		admin, err := newAdminAuth(cfg)
 		if err != nil {
-			panic(err)
+			slog.Error("failed to create admin auth, disabling admin routes", "err", err)
 		}
-		r.Route("/internal/admin/v1", func(r chi.Router) {
-			r.Use(admin.middleware)
-			r.Post("/nodes/{nodeID}:disable", api.handleAdminDisableNode)
-			r.Post("/nodes/{nodeID}:enable", api.handleAdminEnableNode)
-			r.Post("/nodes/{nodeID}:revoke", api.handleAdminRevokeNode)
-		})
+		if admin != nil {
+			r.Route("/internal/admin/v1", func(r chi.Router) {
+				r.Use(admin.middleware)
+				r.Post("/nodes/{nodeID}:disable", api.handleAdminDisableNode)
+				r.Post("/nodes/{nodeID}:enable", api.handleAdminEnableNode)
+				r.Post("/nodes/{nodeID}:revoke", api.handleAdminRevokeNode)
+			})
+		}
 	}
 	r.Get("/healthz", api.handleHealthz)
 	r.Get("/metrics", api.handleMetrics)

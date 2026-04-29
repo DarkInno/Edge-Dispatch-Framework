@@ -83,17 +83,15 @@ func (p *Prober) probeAll(ctx context.Context) {
 		for r := range results {
 			batch = append(batch, r)
 			if len(batch) >= 32 {
-				for _, br := range batch {
-					if err := p.pg.SaveProbeResult(ctx, br); err != nil {
-						slog.Error("save probe result", "error", err)
-					}
+				if err := p.pg.BatchSaveProbeResults(ctx, batch); err != nil {
+					slog.Error("batch save probe results", "error", err)
 				}
 				batch = batch[:0]
 			}
 		}
-		for _, br := range batch {
-			if err := p.pg.SaveProbeResult(ctx, br); err != nil {
-				slog.Error("save probe result", "error", err)
+		if len(batch) > 0 {
+			if err := p.pg.BatchSaveProbeResults(ctx, batch); err != nil {
+				slog.Error("batch save probe results (final)", "error", err)
 			}
 		}
 	}()
@@ -141,6 +139,7 @@ func (p *Prober) probeAll(ctx context.Context) {
 			slog.Error("update scores", "node_id", res.nodeID, "error", err)
 		}
 	}
+	p.nodeCache.Invalidate()
 }
 
 func (p *Prober) ProbeOne(ctx context.Context, nodeID string, endpoint models.Endpoint) (*models.ProbeResult, error) {

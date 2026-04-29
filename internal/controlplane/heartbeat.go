@@ -56,23 +56,30 @@ func (h *Heartbeat) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
+				if len(batch) > 0 {
+					h.processBatch(batch)
+				}
 				return
 			case bh := <-h.batchCh:
-				batch = append(batch, bh)
-				drain:
-				for len(batch) < cap(batch) {
-					select {
-					case bh := <-h.batchCh:
-						batch = append(batch, bh)
-					default:
-						break drain
-					}
+				if len(batch) == 0 {
+					timer.Reset(50 * time.Millisecond)
 				}
-				h.processBatch(batch)
-				batch = batch[:0]
-				timer.Reset(50 * time.Millisecond)
+				batch = append(batch, bh)
+				if len(batch) >= cap(batch) {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					h.processBatch(batch)
+					batch = batch[:0]
+				}
 			case <-timer.C:
-				timer.Reset(50 * time.Millisecond)
+				if len(batch) > 0 {
+					h.processBatch(batch)
+					batch = batch[:0]
+				}
 			}
 		}
 	}()

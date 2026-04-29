@@ -26,7 +26,7 @@ type Reporter struct {
 	nodeID   string
 	stopCh   chan struct{}
 	stopped  bool
-	mu       sync.Mutex
+	mu       sync.RWMutex
 }
 
 func NewReporter(cfg *config.EdgeAgentConfig, server *Server, cache *Cache) *Reporter {
@@ -48,8 +48,8 @@ func (r *Reporter) SetNodeID(id string) {
 }
 
 func (r *Reporter) NodeID() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.nodeID
 }
 

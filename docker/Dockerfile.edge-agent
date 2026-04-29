@@ -3,10 +3,14 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /edge-agent ./cmd/edge-agent
+RUN CGO_ENABLED=0 go build -tags quic -o /edge-agent ./cmd/edge-agent
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates
+RUN adduser -D -g '' appuser
+RUN mkdir -p /tmp/edf-cache && chown appuser /tmp/edf-cache
 COPY --from=builder /edge-agent /edge-agent
 EXPOSE 9090
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://localhost:9090/healthz || exit 1
+USER appuser
 ENTRYPOINT ["/edge-agent"]
