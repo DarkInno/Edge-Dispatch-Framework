@@ -10,6 +10,7 @@ const (
 	NodeStatusActive      NodeStatus = "ACTIVE"
 	NodeStatusDegraded    NodeStatus = "DEGRADED"
 	NodeStatusQuarantined NodeStatus = "QUARANTINED"
+	NodeStatusDisabled    NodeStatus = "DISABLED"
 	NodeStatusOffline     NodeStatus = "OFFLINE"
 )
 
@@ -18,6 +19,7 @@ var internedNodeStatuses = map[string]NodeStatus{
 	"ACTIVE":      NodeStatusActive,
 	"DEGRADED":    NodeStatusDegraded,
 	"QUARANTINED": NodeStatusQuarantined,
+	"DISABLED":    NodeStatusDisabled,
 	"OFFLINE":     NodeStatusOffline,
 }
 
@@ -54,12 +56,12 @@ type Endpoint struct {
 
 // Capabilities describes the node's hardware and network capabilities.
 type Capabilities struct {
-	InboundReachable bool  `json:"inbound_reachable"`
-	CacheDiskGB      int64 `json:"cache_disk_gb"`
-	MaxUplinkMbps    int64 `json:"max_uplink_mbps"`
-	SupportsHTTPS    bool  `json:"supports_https"`
-	NATType         string `json:"nat_type,omitempty"` // "", "none", "full_cone", "restricted", "port_restricted", "symmetric"
-	TunnelRequired  bool  `json:"tunnel_required"`     // true if node requires tunnel for inbound
+	InboundReachable bool   `json:"inbound_reachable"`
+	CacheDiskGB      int64  `json:"cache_disk_gb"`
+	MaxUplinkMbps    int64  `json:"max_uplink_mbps"`
+	SupportsHTTPS    bool   `json:"supports_https"`
+	NATType          string `json:"nat_type,omitempty"` // "", "none", "full_cone", "restricted", "port_restricted", "symmetric"
+	TunnelRequired   bool   `json:"tunnel_required"`    // true if node requires tunnel for inbound
 }
 
 // NodeScores holds computed quality scores.
@@ -71,10 +73,10 @@ type NodeScores struct {
 
 // NodeRuntime contains the current runtime metrics reported via heartbeat.
 type NodeRuntime struct {
-	CPU       float64 `json:"cpu"`
-	MemMB     int64   `json:"mem_mb"`
-	DiskFreeGB int64  `json:"disk_free_gb"`
-	Conn      int64   `json:"conn"`
+	CPU        float64 `json:"cpu"`
+	MemMB      int64   `json:"mem_mb"`
+	DiskFreeGB int64   `json:"disk_free_gb"`
+	Conn       int64   `json:"conn"`
 }
 
 // NodeTraffic contains traffic metrics.
@@ -91,27 +93,27 @@ type NodeCache struct {
 
 // HeartbeatRequest is the payload sent by edge agents.
 type HeartbeatRequest struct {
-	NodeID  string      `json:"node_id"`
-	TS      int64       `json:"ts"`
-	Runtime NodeRuntime `json:"runtime"`
-	Traffic NodeTraffic `json:"traffic"`
-	Cache   NodeCache   `json:"cache"`
+	NodeID         string          `json:"node_id"`
+	TS             int64           `json:"ts"`
+	Runtime        NodeRuntime     `json:"runtime"`
+	Traffic        NodeTraffic     `json:"traffic"`
+	Cache          NodeCache       `json:"cache"`
 	ContentSummary *ContentSummary `json:"content_summary,omitempty"`
 }
 
 // RegisterRequest is the payload for node registration.
 type RegisterRequest struct {
-	NodeName   string       `json:"node_name"`
-	Endpoints  []Endpoint   `json:"public_endpoints"`
-	Region     string       `json:"region"`
-	ISP        string       `json:"isp"`
+	NodeName     string       `json:"node_name"`
+	Endpoints    []Endpoint   `json:"public_endpoints"`
+	Region       string       `json:"region"`
+	ISP          string       `json:"isp"`
 	Capabilities Capabilities `json:"capabilities"`
 }
 
 // RegisterResponse is returned after successful registration.
 type RegisterResponse struct {
-	NodeID string     `json:"node_id"`
-	Auth   NodeAuth   `json:"auth"`
+	NodeID string   `json:"node_id"`
+	Auth   NodeAuth `json:"auth"`
 }
 
 // NodeAuth contains authentication credentials for a node.
@@ -149,10 +151,10 @@ type ClientHints struct {
 
 // DispatchResponse is the response from the dispatch API.
 type DispatchResponse struct {
-	RequestID  string       `json:"request_id"`
-	TTLMs      int64        `json:"ttl_ms"`
+	RequestID  string        `json:"request_id"`
+	TTLMs      int64         `json:"ttl_ms"`
 	Token      DispatchToken `json:"token"`
-	Candidates []Candidate  `json:"candidates"`
+	Candidates []Candidate   `json:"candidates"`
 }
 
 // DispatchToken is a short-lived access token for edge nodes.
@@ -164,17 +166,17 @@ type DispatchToken struct {
 
 // Candidate represents a selected edge node for content delivery.
 type Candidate struct {
-	ID       string   `json:"id"`
-	Endpoint string   `json:"endpoint"`
-	Weight   int      `json:"weight"`
+	ID       string        `json:"id"`
+	Endpoint string        `json:"endpoint"`
+	Weight   int           `json:"weight"`
 	Meta     CandidateMeta `json:"meta,omitempty"`
 }
 
 // CandidateMeta holds additional node metadata for the client.
 type CandidateMeta struct {
-	Region    string `json:"region,omitempty"`
-	ISP       string `json:"isp,omitempty"`
-	ProxyMode string `json:"proxy_mode,omitempty"` // "direct" or "tunnel"
+	Region     string `json:"region,omitempty"`
+	ISP        string `json:"isp,omitempty"`
+	ProxyMode  string `json:"proxy_mode,omitempty"`  // "direct" or "tunnel"
 	GatewayURL string `json:"gateway_url,omitempty"` // Gateway URL for tunnel nodes
 }
 
@@ -187,10 +189,10 @@ type GatewayRequest struct {
 
 // GatewayResponse is returned by the control plane to the gateway.
 type GatewayResponse struct {
-	NodeID   string      `json:"node_id"`
-	Endpoint string      `json:"endpoint,omitempty"` // Direct endpoint for public nodes
-	IsPublic bool        `json:"is_public"`          // true = direct proxy, false = tunnel
-	TunnelID string      `json:"tunnel_id,omitempty"` // Tunnel ID for NAT nodes
+	NodeID   string `json:"node_id"`
+	Endpoint string `json:"endpoint,omitempty"`  // Direct endpoint for public nodes
+	IsPublic bool   `json:"is_public"`           // true = direct proxy, false = tunnel
+	TunnelID string `json:"tunnel_id,omitempty"` // Tunnel ID for NAT nodes
 }
 
 // TunnelStatus represents the status of a tunnel connection.
@@ -217,22 +219,22 @@ type ErrorDetail struct {
 
 // ProbeResult holds the result of a single probe attempt.
 type ProbeResult struct {
-	NodeID       string    `json:"node_id"`
-	Endpoint     Endpoint  `json:"endpoint"`
-	Success      bool      `json:"success"`
-	RTTMs        float64   `json:"rtt_ms"`
-	Error        string    `json:"error,omitempty"`
-	ProbedAt     time.Time `json:"probed_at"`
+	NodeID   string    `json:"node_id"`
+	Endpoint Endpoint  `json:"endpoint"`
+	Success  bool      `json:"success"`
+	RTTMs    float64   `json:"rtt_ms"`
+	Error    string    `json:"error,omitempty"`
+	ProbedAt time.Time `json:"probed_at"`
 }
 
 // ProbeScore aggregates probe results for a node.
 type ProbeScore struct {
-	NodeID         string  `json:"node_id"`
-	SuccessRate1m  float64 `json:"success_rate_1m"`
-	SuccessRate5m  float64 `json:"success_rate_5m"`
-	RTTP50         float64 `json:"rtt_p50"`
-	RTTP95         float64 `json:"rtt_p95"`
-	LastOkAt       time.Time `json:"last_ok_at"`
+	NodeID        string    `json:"node_id"`
+	SuccessRate1m float64   `json:"success_rate_1m"`
+	SuccessRate5m float64   `json:"success_rate_5m"`
+	RTTP50        float64   `json:"rtt_p50"`
+	RTTP95        float64   `json:"rtt_p95"`
+	LastOkAt      time.Time `json:"last_ok_at"`
 }
 
 // ContentSummary is a compact representation of cached content (v0.2+).
@@ -247,10 +249,10 @@ type ContentSummary struct {
 
 // ContentIndexEntry is a stored entry in the content index (v0.2+).
 type ContentIndexEntry struct {
-	NodeID      string `json:"node_id"`
-	ContentKey  string `json:"content_key"`
-	IsHot       bool   `json:"is_hot"`
-	LastSeenAt  int64  `json:"last_seen_at"`
+	NodeID     string `json:"node_id"`
+	ContentKey string `json:"content_key"`
+	IsHot      bool   `json:"is_hot"`
+	LastSeenAt int64  `json:"last_seen_at"`
 }
 
 // DNSQuery represents a DNS resolution request from the GSLB adapter (v0.2+).
@@ -284,11 +286,11 @@ type EdgeAgentReport struct {
 
 // Event types for the event stream.
 const (
-	EventNodeOnline      = "node.online"
-	EventNodeOffline     = "node.offline"
-	EventNodeDegraded    = "node.degraded"
-	EventNodeQuarantined = "node.quarantined"
-	EventNodeRecovered   = "node.recovered"
+	EventNodeOnline        = "node.online"
+	EventNodeOffline       = "node.offline"
+	EventNodeDegraded      = "node.degraded"
+	EventNodeQuarantined   = "node.quarantined"
+	EventNodeRecovered     = "node.recovered"
 	EventSchedulerDegraded = "scheduler.degraded"
 )
 
@@ -313,29 +315,29 @@ const (
 
 // ChunkInfo contains metadata about a single streaming chunk (segment/fragment).
 type ChunkInfo struct {
-	StreamKey  string  `json:"stream_key"`
-	SeqNum     int64   `json:"seq_num"`
-	URL        string  `json:"url"`
-	DurationMs int64   `json:"duration_ms"`
-	Size       int64   `json:"size,omitempty"`
+	StreamKey  string `json:"stream_key"`
+	SeqNum     int64  `json:"seq_num"`
+	URL        string `json:"url"`
+	DurationMs int64  `json:"duration_ms"`
+	Size       int64  `json:"size,omitempty"`
 }
 
 // ManifestInfo holds parsed playlist/manifest data.
 type ManifestInfo struct {
-	StreamKey    string      `json:"stream_key"`
-	Type         StreamType  `json:"type"`
-	Chunks       []ChunkInfo `json:"chunks"`
-	TargetDurMs  int64       `json:"target_dur_ms,omitempty"`
-	Endlist      bool        `json:"endlist,omitempty"`
-	MedSeq       int64       `json:"med_seq,omitempty"`
-	UpdatedAt    int64       `json:"updated_at"`
+	StreamKey   string      `json:"stream_key"`
+	Type        StreamType  `json:"type"`
+	Chunks      []ChunkInfo `json:"chunks"`
+	TargetDurMs int64       `json:"target_dur_ms,omitempty"`
+	Endlist     bool        `json:"endlist,omitempty"`
+	MedSeq      int64       `json:"med_seq,omitempty"`
+	UpdatedAt   int64       `json:"updated_at"`
 }
 
 // PrefetchRequest describes a batch of chunks to prefetch.
 type PrefetchRequest struct {
-	StreamKey    string      `json:"stream_key"`
-	Chunks       []ChunkInfo `json:"chunks"`
-	Priority     int         `json:"priority,omitempty"`
+	StreamKey string      `json:"stream_key"`
+	Chunks    []ChunkInfo `json:"chunks"`
+	Priority  int         `json:"priority,omitempty"`
 }
 
 // PrefetchResult reports the outcome of prefetch operations.
@@ -348,10 +350,10 @@ type PrefetchResult struct {
 
 // StreamingMetrics tracks streaming-specific stats.
 type StreamingMetrics struct {
-	ChunkRequests    int64   `json:"chunk_requests"`
-	ChunkCacheHits   int64   `json:"chunk_cache_hits"`
-	ChunkPrefetched  int64   `json:"chunk_prefetched"`
-	WindowEvictions  int64   `json:"window_evictions"`
-	ManifestFetches  int64   `json:"manifest_fetches"`
-	AvgLatencyMs     float64 `json:"avg_latency_ms,omitempty"`
+	ChunkRequests   int64   `json:"chunk_requests"`
+	ChunkCacheHits  int64   `json:"chunk_cache_hits"`
+	ChunkPrefetched int64   `json:"chunk_prefetched"`
+	WindowEvictions int64   `json:"window_evictions"`
+	ManifestFetches int64   `json:"manifest_fetches"`
+	AvgLatencyMs    float64 `json:"avg_latency_ms,omitempty"`
 }

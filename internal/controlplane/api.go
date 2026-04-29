@@ -3,6 +3,7 @@ package controlplane
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
 	"github.com/darkinno/edge-dispatch-framework/internal/metrics"
@@ -174,6 +176,18 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 		r.Post("/v1/dispatch/resolve", api.handleDispatch)
 		r.Get("/obj/*", api.handleObjectIngress)
 	})
+	if cfg.EnableAdminInternalAPI {
+		admin, err := newAdminAuth(cfg)
+		if err != nil {
+			panic(err)
+		}
+		r.Route("/internal/admin/v1", func(r chi.Router) {
+			r.Use(admin.middleware)
+			r.Post("/nodes/{nodeID}:disable", api.handleAdminDisableNode)
+			r.Post("/nodes/{nodeID}:enable", api.handleAdminEnableNode)
+			r.Post("/nodes/{nodeID}:revoke", api.handleAdminRevokeNode)
+		})
+	}
 	r.Get("/healthz", api.handleHealthz)
 	r.Get("/metrics", api.handleMetrics)
 
@@ -325,6 +339,14 @@ func (a *API) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	a.metrics.heartbeatTotal.Inc()
 
+	if a.registry == nil {
+		a.writeError(w, http.StatusInternalServerError, "INTERNAL", "internal server error")
+		return
+	}
+	if _, err := a.registry.GetNode(r.Context(), req.NodeID); err != nil {
+		a.writeError(w, http.StatusNotFound, "NOT_FOUND", "node not found")
+		return
+	}
 	if err := a.heartbeat.ProcessHeartbeat(r.Context(), req); err != nil {
 		slog.Error("heartbeat failed", "err", err)
 		a.writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", "internal server error")
@@ -350,6 +372,10 @@ func (a *API) handleRevokeNode(w http.ResponseWriter, r *http.Request) {
 	nodeID := chi.URLParam(r, "nodeID")
 
 	if err := a.registry.RevokeNode(r.Context(), nodeID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			a.writeError(w, http.StatusNotFound, "NOT_FOUND", "node not found")
+			return
+		}
 		slog.Error("revoke node failed", "err", err)
 		a.writeError(w, http.StatusInternalServerError, "REVOKE_FAILED", "internal server error")
 		return
