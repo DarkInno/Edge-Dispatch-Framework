@@ -75,24 +75,22 @@ func New(cfg *config.EdgeAgentConfig) (*Edge, error) {
 
 // Start runs the edge agent: registers if needed, then starts server and reporter.
 func (e *Edge) Start(ctx context.Context) error {
-	// Register with control plane if no token
-	if e.cfg.NodeToken == "" {
-		slog.Info("no node token, registering with control plane")
-		if err := e.reporter.Register(ctx); err != nil {
-			return fmt.Errorf("register: %w", err)
-		}
+	// Register with control plane to get a NodeID
+	slog.Info("registering with control plane")
+	if err := e.reporter.Register(ctx); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
 
-		// Update tunnel client with node ID after registration
-		if e.tunnelClient != nil {
-			e.tunnelClient = tunnel.NewClient(tunnel.ClientConfig{
-				ServerAddr:    e.cfg.TunnelServerAddr,
-				NodeID:        e.reporter.NodeID(),
-				NodeToken:     e.cfg.TunnelAuthToken,
-				ServiceAddr:   e.cfg.ListenAddr,
-				KeepAlive:     30 * time.Second,
-				ReconnectWait: 5 * time.Second,
-			}, slog.Default())
-		}
+	// Update tunnel client with node ID after registration
+	if e.tunnelClient != nil {
+		e.tunnelClient = tunnel.NewClient(tunnel.ClientConfig{
+			ServerAddr:    e.cfg.TunnelServerAddr,
+			NodeID:        e.reporter.NodeID(),
+			NodeToken:     e.cfg.TunnelAuthToken,
+			ServiceAddr:   e.cfg.ListenAddr,
+			KeepAlive:     30 * time.Second,
+			ReconnectWait: 5 * time.Second,
+		}, slog.Default())
 	}
 
 	// Start tunnel client if in NAT mode

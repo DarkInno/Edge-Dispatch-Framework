@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/darkinno/edge-dispatch-framework/internal/config"
 	"github.com/darkinno/edge-dispatch-framework/internal/edgeagent"
@@ -33,18 +34,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := edge.Start(ctx); err != nil {
+		logger.Error("edge agent failed", "error", err)
+		os.Exit(1)
+	}
+
 	// Handle graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	logger.Info("received shutdown signal", "signal", sig.String())
+	cancel()
 
-	go func() {
-		sig := <-quit
-		logger.Info("received shutdown signal", "signal", sig.String())
-		cancel()
-	}()
-
-	if err := edge.Start(ctx); err != nil {
-		logger.Error("edge agent failed", "error", err)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := edge.Shutdown(shutdownCtx); err != nil {
+		logger.Error("edge agent shutdown error", "error", err)
 		os.Exit(1)
 	}
 
