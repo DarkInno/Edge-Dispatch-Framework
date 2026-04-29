@@ -26,6 +26,7 @@ type config struct {
 	controlPlaneURL string
 	originURL       string
 	concurrency     int
+	workers         int
 	duration        time.Duration
 	rampUp          time.Duration
 	objects         int
@@ -168,6 +169,7 @@ func main() {
 	flag.StringVar(&cfg.originURL, "origin", "http://localhost:7070", "origin URL")
 	flag.StringVar(&cfg.edgeEndpoint, "edge", "http://localhost:9090", "edge agent URL")
 	flag.IntVar(&cfg.concurrency, "c", 10, "concurrent workers")
+	flag.IntVar(&cfg.workers, "w", 0, "worker pool size (0 = same as -c, limits active TCP connections)")
 	flag.DurationVar(&cfg.duration, "d", 30*time.Second, "test duration")
 	flag.DurationVar(&cfg.rampUp, "rampup", 0, "ramp-up time (0 = no ramp)")
 	flag.IntVar(&cfg.objects, "objects", 100, "number of unique objects")
@@ -187,7 +189,12 @@ func main() {
 	fmt.Println("  Edge Dispatch Framework - Stress Test")
 	fmt.Println("══════════════════════════════════════════════════")
 	fmt.Printf("  Mode:          %s\n", cfg.mode)
+	eff := cfg.workers
+	if eff <= 0 {
+		eff = cfg.concurrency
+	}
 	fmt.Printf("  Concurrency:   %d\n", cfg.concurrency)
+	fmt.Printf("  Workers:       %d\n", eff)
 	fmt.Printf("  Duration:      %v\n", cfg.duration)
 	fmt.Printf("  Ramp-up:       %v\n", cfg.rampUp)
 	fmt.Printf("  Objects:       %d\n", cfg.objects)
@@ -490,13 +497,18 @@ func runBenchEdge(ctx context.Context, cfg *config, st *stats) {
 func runWorkers(ctx context.Context, cfg *config, st *stats, fn func(workerID int) func()) {
 	var wg sync.WaitGroup
 
-	for i := 0; i < cfg.concurrency; i++ {
+	poolSize := cfg.workers
+	if poolSize <= 0 {
+		poolSize = cfg.concurrency
+	}
+
+	for i := 0; i < poolSize; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 
 			if cfg.rampUp > 0 {
-				delay := time.Duration(float64(cfg.rampUp) * float64(workerID) / float64(cfg.concurrency))
+				delay := time.Duration(float64(cfg.rampUp) * float64(workerID) / float64(poolSize))
 				select {
 				case <-ctx.Done():
 					return
