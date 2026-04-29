@@ -57,6 +57,9 @@ func TestAPIIntegrationRegister(t *testing.T) {
 
 	registry := NewRegistry(pg, redis)
 	heartbeat := NewHeartbeat(pg, redis, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	heartbeat.Start(ctx)
 	signer := auth.NewSigner(cfg.TokenSecret)
 	nodeCache := NewNodeCache(pg, 5*time.Second)
 	scheduler := NewScheduler(nodeCache, signer, cfg)
@@ -80,7 +83,10 @@ func TestAPIIntegrationRegister(t *testing.T) {
 		},
 	}
 	body, _ := json.Marshal(regReq)
-	resp, err := http.Post(ts.URL+"/v1/nodes/register", "application/json", bytes.NewReader(body))
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/nodes/register", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+cfg.TokenSecret)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -100,7 +106,9 @@ func TestAPIIntegrationRegister(t *testing.T) {
 	}
 
 	// Get node
-	getResp, err := http.Get(ts.URL + "/v1/nodes/" + regResp.NodeID)
+	getReq, _ := http.NewRequest("GET", ts.URL+"/v1/nodes/"+regResp.NodeID, nil)
+	getReq.Header.Set("Authorization", "Bearer "+cfg.TokenSecret)
+	getResp, err := http.DefaultClient.Do(getReq)
 	if err != nil {
 		t.Fatalf("get node: %v", err)
 	}
@@ -121,7 +129,10 @@ func TestAPIIntegrationRegister(t *testing.T) {
 		},
 	}
 	hbBody, _ := json.Marshal(hbReq)
-	hbResp, err := http.Post(ts.URL+"/v1/nodes/heartbeat", "application/json", bytes.NewReader(hbBody))
+	hbReqHTTP, _ := http.NewRequest("POST", ts.URL+"/v1/nodes/heartbeat", bytes.NewReader(hbBody))
+	hbReqHTTP.Header.Set("Authorization", "Bearer "+cfg.TokenSecret)
+	hbReqHTTP.Header.Set("Content-Type", "application/json")
+	hbResp, err := http.DefaultClient.Do(hbReqHTTP)
 	if err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}

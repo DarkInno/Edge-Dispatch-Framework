@@ -299,8 +299,8 @@ func (s *PGStore) CreateNode(ctx context.Context, req models.RegisterRequest, to
 	labelsJSON, _ := json.Marshal(models.NodeLabels{})
 
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO nodes (node_id, tenant_id, project_id, name, endpoints, region, isp, capabilities, status, weight, labels, scores)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'REGISTERED', 100, $9, $10)
+		INSERT INTO nodes (node_id, tenant_id, project_id, name, endpoints, region, isp, capabilities, status, weight, labels, scores, last_seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'REGISTERED', 100, $9, $10, NOW())
 	`, nodeID, req.TenantID, req.ProjectID, req.NodeName, endpointsJSON, req.Region, req.ISP, capsJSON, labelsJSON, scoresJSON)
 	if err != nil {
 		return nil, fmt.Errorf("insert node: %w", err)

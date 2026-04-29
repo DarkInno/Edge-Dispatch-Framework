@@ -95,6 +95,7 @@ func main() {
 	ctxBg, cancelBg := context.WithCancel(context.Background())
 	defer cancelBg()
 
+	heartbeat.Start(ctxBg)
 	prober.Start(ctxBg)
 
 	// Start HTTP server
