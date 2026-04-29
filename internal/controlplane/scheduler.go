@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -249,24 +247,13 @@ func (s *Scheduler) NoOriginFallback(req models.DispatchRequest) *models.Dispatc
 		originURL = "http://localhost:7070"
 	}
 
-	key := sanitizeResourceKey(req.Resource.Key)
-	if key == "" {
-		key = "unknown"
-	}
-
-	u, err := url.Parse(originURL)
-	if err != nil {
-		u = &url.URL{Scheme: "http", Host: "localhost:7070"}
-	}
-	u.Path = path.Join(u.Path, key)
-
 	return &models.DispatchResponse{
 		RequestID: uuid.New().String(),
 		TTLMs:     s.cfg.DefaultTTLMs,
 		Candidates: []models.Candidate{
 			{
 				ID:       "origin",
-				Endpoint: u.String(),
+				Endpoint: originURL,
 				Weight:   1,
 			},
 		},

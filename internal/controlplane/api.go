@@ -160,7 +160,7 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 	}
 
 	r := chi.NewRouter()
-	rl := newRateLimiter(1000, 2000)
+	rl := newRateLimiter(100000, 200000)
 	r.Use(withRateLimit(rl))
 	r.Use(withAPICOMmonHeaders)
 
@@ -172,7 +172,7 @@ func NewAPI(registry *Registry, heartbeat *Heartbeat, scheduler *Scheduler, cfg 
 		r.Get("/v1/nodes/{nodeID}", api.handleGetNode)
 		r.Delete("/v1/nodes/{nodeID}", api.handleRevokeNode)
 		r.Post("/v1/dispatch/resolve", api.handleDispatch)
-		r.Get("/obj/{key}", api.handleObjectIngress)
+		r.Get("/obj/*", api.handleObjectIngress)
 	})
 	r.Get("/healthz", api.handleHealthz)
 	r.Get("/metrics", api.handleMetrics)
@@ -411,7 +411,7 @@ func (a *API) handleDispatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleObjectIngress(w http.ResponseWriter, r *http.Request) {
-	key := chi.URLParam(r, "key")
+	key := chi.URLParam(r, "*")
 	key = sanitizeResourceKey(key)
 
 	req := models.DispatchRequest{
