@@ -192,34 +192,30 @@ func newAPIMetrics() *apiMetrics {
 }
 
 func (a *API) writeJSON(w http.ResponseWriter, status int, v any) {
-	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer bufPool.Put(buf)
-	if err := json.NewEncoder(buf).Encode(v); err != nil {
+	b, err := json.Marshal(v)
+	if err != nil {
 		slog.Error("write json", "error", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write(buf.Bytes())
+	w.Write(b)
 }
 
 func (a *API) writeError(w http.ResponseWriter, status int, code, message string) {
-	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-	defer bufPool.Put(buf)
-	if err := json.NewEncoder(buf).Encode(models.ErrorResponse{
+	b, err := json.Marshal(models.ErrorResponse{
 		Error: models.ErrorDetail{
 			Code:    code,
 			Message: message,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		slog.Error("write error", "error", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	w.Write(buf.Bytes())
+	w.Write(b)
 }
 
 func clientIP(r *http.Request) string {
