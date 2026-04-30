@@ -18,7 +18,7 @@
 | **内容感知调度** | Bloom Filter + 热内容精确索引，命中率优先 | ✅ |
 | **直播分片分发** | HLS/DASH 滑动窗口缓存 + 预取 | ✅ |
 | **Web 管理控制台** | 可视化管理面板，监控节点、调度、数据 | [Webmanager](https://github.com/im10furry/Edge-Dispatch-Framework-Webmanager) |
-| **HTTP/3 / QUIC** | 基于 UDP 的下一代传输 | 🔜 Roadmap |
+| **HTTP/3 / QUIC** | 基于 UDP 的下一代传输 | ✅ |
 
 ## 架构概览
 
