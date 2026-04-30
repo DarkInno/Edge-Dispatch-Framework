@@ -18,7 +18,7 @@
 | **Content-Aware Scheduling** | Bloom Filter + hot content exact indexing, hit-rate-first routing | ✅ |
 | **Live Stream Segment Delivery** | HLS/DASH sliding-window cache + prefetch | ✅ |
 | **Web Admin Console** | Visual management panel for nodes, dispatch, and data monitoring | [Webmanager](https://github.com/im10furry/Edge-Dispatch-Framework-Webmanager) |
-| **HTTP/3 / QUIC** | Next-gen UDP-based transport | 🔜 Roadmap |
+| **HTTP/3 / QUIC** | Next-gen UDP-based transport | ✅ |
 
 ## Architecture Overview
 
